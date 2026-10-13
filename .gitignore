@@ -1,0 +1,17 @@
+# Build output
+/compose-policy-proxy
+/dist/
+
+# Local scratch
+*.tmp
+*.out
+
+# Generated release config (see docs/development.md)
+.ko-release.yaml
+
+repomix-output.xml
+
+# Editor and OS state
+.DS_Store
+.idea/
+.vscode/

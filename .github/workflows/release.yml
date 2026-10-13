@@ -1,0 +1,38 @@
+name: Publish image
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: ko-build/setup-ko@v0.8
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        env:
+          KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
+        run: |
+          ko build ./cmd/compose-policy-proxy \
+            --bare \
+            --platform=linux/amd64,linux/arm64 \
+            --image-user 0:0 \
+            --ldflags="-s -w -X main.version=$GITHUB_REF_NAME -X main.commit=$GITHUB_SHA" \
+            --tags "$GITHUB_REF_NAME,latest"

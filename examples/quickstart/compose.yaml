@@ -1,0 +1,39 @@
+name: compose-policy-proxy
+
+services:
+  policy-proxy:
+    image: ghcr.io/hnw/compose-policy-proxy:latest
+    working_dir: ${PWD}
+    volumes:
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${PWD}:${PWD}:ro
+      - proxy-socket:/run/compose-policy-proxy
+    environment:
+      PWD: ${PWD}
+
+  # Represents a CI runner or bot with restricted Docker access.
+  app:
+    image: compose-policy-proxy-example-app
+    build:
+      context: .
+      dockerfile: app.Dockerfile
+    working_dir: ${PWD}
+    entrypoint: []
+    environment:
+      DOCKER_HOST: unix:///run/compose-policy-proxy/docker.sock
+    volumes:
+      - ${PWD}:${PWD}:ro
+      - proxy-socket:/run/compose-policy-proxy
+    command: ["sleep", "infinity"]
+    stdin_open: true
+    tty: true
+    depends_on:
+      - policy-proxy
+
+  # Launched on demand by the application through the restricted socket.
+  tool:
+    image: alpine:3.22
+    profiles: ["tools"]
+
+volumes:
+  proxy-socket:
