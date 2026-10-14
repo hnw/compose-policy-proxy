@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/distribution/reference"
 
 	"github.com/hnw/compose-policy-proxy/internal/compose"
 )
@@ -34,60 +35,24 @@ func images(project *types.Project) []string {
 	return out
 }
 
-// imageDeclared reports whether ref names an image the project declares,
-// comparing through normalizeImageRef.
+// imageDeclared reports whether ref matches a declared image,
+// normalizing implicit registry, namespace, and tag defaults.
 func imageDeclared(project *types.Project, ref string) bool {
-	want := normalizeImageRef(ref)
-	if want == "" {
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
 		return false
 	}
+	want := reference.TagNameOnly(named).String()
 	for _, declared := range images(project) {
-		if normalizeImageRef(declared) == want {
+		named, err := reference.ParseNormalizedNamed(declared)
+		if err != nil {
+			continue
+		}
+		if reference.TagNameOnly(named).String() == want {
 			return true
 		}
 	}
 	return false
-}
-
-// normalizeImageRef reduces a reference to the part Docker distinguishes, applying
-// only the implicit registry, the implicit library namespace and an absent tag, never a digest.
-func normalizeImageRef(ref string) string {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return ""
-	}
-
-	// A digest pins the content exactly, so it is never defaulted away.
-	if i := strings.Index(ref, "@"); i >= 0 {
-		return normalizeRepository(ref[:i]) + ref[i:]
-	}
-
-	repo, tag, hasTag := strings.Cut(ref, ":")
-	if !hasTag {
-		repo, tag = ref, ""
-	}
-	repo = normalizeRepository(repo)
-	if repo == "" {
-		return ""
-	}
-	if tag == "" {
-		return repo + ":latest"
-	}
-	return repo + ":" + tag
-}
-
-// normalizeRepository expands the implicit Docker Hub registry and library
-// namespace.
-func normalizeRepository(repo string) string {
-	host, rest, hasHost := strings.Cut(repo, "/")
-	if !hasHost || host != "docker.io" {
-		return repo
-	}
-	rest = strings.TrimPrefix(rest, "library/")
-	if rest == "" {
-		return ""
-	}
-	return rest
 }
 
 // authorizePull decides what a POST /images/create request may pull. Registry

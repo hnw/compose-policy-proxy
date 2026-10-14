@@ -419,6 +419,46 @@ func TestImagePolicy(t *testing.T) {
 			t.Errorf("image %q should not be declared", foreign)
 		}
 	}
+
+	const (
+		pinned = "sha256:3a3e2f8c1b0d5e7a9c4b6d8f0e2a4c6b8d0f2e4a6c8b0d2f4e6a8c0b2d4f6e8a"
+		other  = "sha256:1b7d9f3a5c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b0c"
+	)
+	r := &types.Project{
+		Name: "demo",
+		Services: types.Services{
+			"hub":    {Name: "hub", Image: "alpine"},
+			"local":  {Name: "local", Image: "localhost:5000/myapp"},
+			"pinned": {Name: "pinned", Image: "localhost:5000/myapp@" + pinned},
+		},
+	}
+	for _, declared := range []string{
+		"alpine",
+		"docker.io/library/alpine:latest",
+		"localhost:5000/myapp:latest",
+		"localhost:5000/myapp@" + pinned,
+	} {
+		if !imageDeclared(r, declared) {
+			t.Errorf("image %q should be declared", declared)
+		}
+	}
+	for _, foreign := range []string{
+		// A registry port is not a tag, so it never stands in for one.
+		"localhost:5000/myapp:1.0",
+		"localhost:5000/myapp:2.0",
+		// A digest pins the content, so a different digest or registry is a
+		// different image.
+		"localhost:5000/myapp@" + other,
+		"registry.example.com/myapp@" + pinned,
+		// A tag written next to a digest is part of the identity and is kept.
+		"localhost:5000/myapp:1.0@" + pinned,
+		"Alpine",
+		"localhost:5000/myapp:",
+	} {
+		if imageDeclared(r, foreign) {
+			t.Errorf("image %q should not be declared", foreign)
+		}
+	}
 }
 
 func TestPullPolicy(t *testing.T) {
