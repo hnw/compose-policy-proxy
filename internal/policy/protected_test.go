@@ -132,6 +132,9 @@ func TestProtectedServiceCannotBeCreated(t *testing.T) {
 	if !strings.Contains(pe.Detail, "mounts the Docker socket") {
 		t.Errorf("the denial must say why, got %q", pe.Detail)
 	}
+	if want := `service "proxy": `; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("refusal = %q, want it to open with %q", err, want)
+	}
 }
 
 func TestOrdinaryServiceCanStillBeCreated(t *testing.T) {

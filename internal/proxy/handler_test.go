@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -54,17 +55,23 @@ func TestServeHTTPRefusesWithoutForwarding(t *testing.T) {
 	}{
 		{
 			name: "an endpoint outside the allowlist", method: "POST", path: "/v1.51/containers/abc/exec",
-			message: "not allowed",
+			message: `compose-policy-proxy: docker API endpoint "/containers/abc/exec" is not allowed`,
+		},
+		{
+			name: "a field the compose file does not declare", method: "POST", path: "/v1.51/containers/create",
+			body: `{"Image":"alpine:3.20","User":"root","HostConfig":{"NetworkMode":"demo_frontend"},` +
+				`"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`,
+			message: `compose-policy-proxy: service "app": Config.User: compose declares "", found "root"`,
 		},
 		{
 			name: "a body the policy cannot decode", method: "POST", path: "/v1.51/containers/create",
 			body:    `{"HostConfig":{"SomeNewPrivilegeField":true}}`,
-			message: "cannot be decoded",
+			message: `compose-policy-proxy: container create request cannot be decoded: json: unknown field "SomeNewPrivilegeField"`,
 		},
 		{
 			name: "a request body too large to decide on", method: "POST", path: "/v1.51/containers/create",
 			body:    strings.Repeat("x", policy.MaxBodySize+1),
-			message: "exceeds",
+			message: fmt.Sprintf("compose-policy-proxy: request body exceeds %d bytes", policy.MaxBodySize),
 		},
 	}
 	for _, tc := range cases {
@@ -82,8 +89,8 @@ func TestServeHTTPRefusesWithoutForwarding(t *testing.T) {
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatalf("the refusal is not the documented JSON shape: %v (%q)", err, body)
 			}
-			if !strings.Contains(payload["message"], tc.message) {
-				t.Errorf("message = %q, want it to mention %q", payload["message"], tc.message)
+			if payload["message"] != tc.message {
+				t.Errorf("message = %q, want %q", payload["message"], tc.message)
 			}
 			if upstream.count() != before {
 				t.Error("a refused request reached the daemon")
@@ -98,6 +105,8 @@ func TestServeHTTPLogsEachDecision(t *testing.T) {
 
 	ops := []struct{ method, path, body string }{
 		{"GET", "/v1.51/version", ""},
+		{"POST", "/v1.51/networks/create", `{"Name":"demo_frontend",` +
+			`"Labels":{"com.docker.compose.project":"demo","com.docker.compose.network":"frontend"}}`},
 		{"GET", "/v1.51/containers/json", ""},
 		{"POST", "/v1.51/containers/abc/exec", ""},
 		{"POST", "/v1.51/containers/create", `{"Image":"alpine:3.20","User":"root",` +
@@ -117,6 +126,8 @@ func TestServeHTTPLogsEachDecision(t *testing.T) {
 		// A denial over a field names it, a denial with no field to name carries no attribute.
 		"endpoint=/containers/create",
 		"field=Config.User",
+		// A network create matched a Compose key rather than a service.
+		"endpoint=/networks/create network=frontend",
 	} {
 		if !strings.Contains(log, want) {
 			t.Errorf("the decision log does not contain %q:\n%s", want, log)
@@ -124,6 +135,9 @@ func TestServeHTTPLogsEachDecision(t *testing.T) {
 	}
 	if strings.Contains(log, "reason=") {
 		t.Errorf("the decision log still classifies denials by reason:\n%s", log)
+	}
+	if strings.Contains(log, "endpoint=/networks/create service=") {
+		t.Errorf("a network key is recorded as a service name:\n%s", log)
 	}
 }
 
@@ -168,6 +182,33 @@ func TestServeHTTPDoesNotRebuildAMalformedQuery(t *testing.T) {
 	}
 	if upstream.count() != before {
 		t.Error("a request with a malformed query reached the daemon")
+	}
+}
+
+func TestServeHTTPHidesAComposeSecret(t *testing.T) {
+	const secret = "S3cr3t-compose-only"
+	project := demoProject()
+	app := project.Services["app"]
+	app.StorageOpt = types.Mapping{"type": "nfs", "o": secret}
+	project.Services["app"] = app
+
+	var out strings.Builder
+	socket, _ := testProxyWithLogger(t, project, slog.NewTextHandler(&out, nil))
+	resp := do(t, socket, "POST", "/v1.51/containers/create",
+		`{"Image":"alpine:3.20","HostConfig":{"NetworkMode":"demo_frontend",`+
+			`"StorageOpt":{"type":"nfs","o":"other"}},`+
+			`"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "HostConfig.StorageOpt") ||
+		!strings.Contains(out.String(), "field=HostConfig.StorageOpt") {
+		t.Fatalf("the refusal is not about the storage options:\n%s\n%s", body, out.String())
+	}
+	if strings.Contains(string(body), secret) || strings.Contains(out.String(), secret) {
+		t.Errorf("%q reached the client or the log:\n%s\n%s", secret, body, out.String())
 	}
 }
 

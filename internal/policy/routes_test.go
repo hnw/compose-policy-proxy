@@ -213,7 +213,7 @@ func TestEveryAllowlistedEndpointHasARule(t *testing.T) {
 	p := &Policy{project: &types.Project{Name: "demo"}, inspect: stubInspector{}}
 
 	for endpoint := range allowlist {
-		_, _, err := p.decide(t.Context(), operation{Endpoint: endpoint, Target: "target"}, &Request{URL: &url.URL{}})
+		_, _, _, err := p.decide(t.Context(), operation{Endpoint: endpoint, Target: "target"}, &Request{URL: &url.URL{}})
 		if errors.Is(err, errUnhandledEndpoint) {
 			t.Errorf("%s is allowlisted but no authorization rule covers it", endpoint)
 		}
@@ -225,7 +225,7 @@ func TestEveryAllowlistedEndpointHasARule(t *testing.T) {
 func TestEndpointWithoutARuleIsRefused(t *testing.T) {
 	p := &Policy{project: &types.Project{Name: "demo"}, inspect: stubInspector{}}
 
-	_, _, err := p.decide(t.Context(), operation{Endpoint: "/events", Target: ""}, &Request{URL: &url.URL{}})
+	_, _, _, err := p.decide(t.Context(), operation{Endpoint: "/events", Target: ""}, &Request{URL: &url.URL{}})
 	if !errors.Is(err, errUnhandledEndpoint) {
 		t.Fatalf("an endpoint no rule covers was not refused: %v", err)
 	}

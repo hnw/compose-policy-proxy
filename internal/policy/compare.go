@@ -101,7 +101,7 @@ func compareDockerOnlyFields(service types.ServiceConfig, req *container.CreateR
 	// a host path to write. Keep it refused in case an Engine implements it.
 	if hc.ContainerIDFile != "" {
 		return denyf(service.Name, "HostConfig.ContainerIDFile",
-			"the request asks for a container id file written to host path %q", hc.ContainerIDFile)
+			"a container id file at host path %q is not declared by compose", hc.ContainerIDFile)
 	}
 	if hc.PublishAllPorts {
 		return deny(service.Name, "HostConfig.PublishAllPorts",
@@ -111,7 +111,7 @@ func compareDockerOnlyFields(service types.ServiceConfig, req *container.CreateR
 	// reached outside the canonical mount set rather than through it.
 	if len(req.Config.Volumes) != 0 {
 		return deny(service.Name, "Config.Volumes",
-			"the request declares an anonymous volume outside the mount entries the policy compares")
+			"an anonymous volume is declared outside the mount entries the policy compares")
 	}
 
 	// The next group is create-path only, since the daemon substitutes or
@@ -121,11 +121,11 @@ func compareDockerOnlyFields(service types.ServiceConfig, req *container.CreateR
 		// value here was invented by the client.
 		if len(hc.MaskedPaths) != 0 {
 			return denyf(service.Name, "HostConfig.MaskedPaths",
-				"compose cannot express masked paths, request disables the daemon defaults")
+				"compose cannot express masked paths, so an override is refused")
 		}
 		if len(hc.ReadonlyPaths) != 0 {
 			return denyf(service.Name, "HostConfig.ReadonlyPaths",
-				"compose cannot express read-only paths, request disables the daemon defaults")
+				"compose cannot express read-only paths, so an override is refused")
 		}
 		// Compose only maps CgroupnsMode. This field names a cgroup directly, so
 		// the proxy cannot tell what it selects.
@@ -151,7 +151,7 @@ func compareEntrypoint(service types.ServiceConfig, req *container.CreateRequest
 	got := []string(req.Config.Entrypoint)
 	if !slices.Equal(want, got) {
 		return denyf(service.Name, "Config.Entrypoint",
-			"compose declares entrypoint %v, request asks for %v", want, got)
+			"compose declares entrypoint %v, found %v", want, got)
 	}
 	return nil
 }
@@ -182,10 +182,8 @@ func equalMap(service, field string, want, got map[string]string) error {
 	return denyMismatch(service, field, want, got)
 }
 
-// denyMismatch is the refusal the helpers above report. The field names what was
-// compared, so the message only has to say which side is which.
 func denyMismatch(service, field string, want, got any) error {
-	return denyf(service, field, "compose declares %v, request asks for %v", quoted(want), quoted(got))
+	return denyf(service, field, "compose declares %v, found %v", quoted(want), quoted(got))
 }
 
 // quoted writes a string value as a quoted string, so that an empty one is visible.
@@ -205,13 +203,13 @@ func compareCapabilities(service types.ServiceConfig, req *container.CreateReque
 	gotAdd := canonicalCapabilities(hc.CapAdd)
 	if !capabilitiesSubset(gotAdd, wantAdd) {
 		return denyf(service.Name, "HostConfig.CapAdd",
-			"compose declares cap_add %v, request asks for %v", wantAdd, gotAdd)
+			"compose declares cap_add %v, found %v", wantAdd, gotAdd)
 	}
 	wantDrop := canonicalCapabilities(service.CapDrop)
 	gotDrop := canonicalCapabilities(hc.CapDrop)
 	if !capabilitiesSubset(wantDrop, gotDrop) {
 		return denyf(service.Name, "HostConfig.CapDrop",
-			"compose drops %v, request keeps %v", wantDrop, missingFrom(gotDrop, wantDrop))
+			"compose requires dropping %v, but they are not dropped", missingFrom(gotDrop, wantDrop))
 	}
 	// Re-adding a dropped capability hands back the privilege even though the
 	// subset check above passed.
@@ -242,11 +240,16 @@ type securityOpt struct {
 	hasVal bool
 }
 
-func (s securityOpt) String() string {
-	if s.hasVal {
-		return s.key + "=" + s.value
+// text renders one option for a refusal. A seccomp profile is a whole JSON
+// document the Compose file owns, so its key stands for it.
+func (s securityOpt) text() string {
+	if s.key == "seccomp" {
+		return s.key
 	}
-	return s.key
+	if !s.hasVal {
+		return s.key
+	}
+	return s.key + "=" + s.value
 }
 
 // isSeccompProfileFile reports whether the option names a profile file rather than
@@ -280,7 +283,7 @@ func parseSecurityOpt(raw string) (securityOpt, error) {
 		if strings.Contains(raw, ":") {
 			parts = strings.SplitN(raw, ":", 2)
 		} else {
-			return securityOpt{}, denyf("", "security_opt", "invalid security_opt %q", raw)
+			return securityOpt{}, fmt.Errorf("invalid security_opt %q", raw)
 		}
 	}
 	opt := securityOpt{key: parts[0]}
@@ -357,20 +360,16 @@ func readSeccompProfile(project *types.Project, name string) (string, error) {
 func compareSecurityOpt(service types.ServiceConfig, req *container.CreateRequest, m mode) error {
 	want, err := composeSecurityOpts(service)
 	if err != nil {
-		if pe, ok := Inspect(err); ok {
-			pe.Service = service.Name
-			return pe
-		}
-		return err
+		return denyf(service.Name, "HostConfig.SecurityOpt", "%v", err)
 	}
 
-	got := make(map[string]string, len(req.HostConfig.SecurityOpt))
+	got := make(map[string]securityOpt, len(req.HostConfig.SecurityOpt))
 	for _, raw := range req.HostConfig.SecurityOpt {
 		opt, err := parseSecurityOpt(raw)
 		if err != nil {
-			return err
+			return denyf(service.Name, "HostConfig.SecurityOpt", "%v", err)
 		}
-		got[opt.key] = opt.value
+		got[opt.key] = opt
 	}
 
 	allowed := make(map[string]securityOpt, len(want))
@@ -380,31 +379,37 @@ func compareSecurityOpt(service types.ServiceConfig, req *container.CreateReques
 
 	// Every option Compose asked for must still be in effect, unchanged.
 	for _, opt := range want {
-		gotValue, ok := got[opt.key]
+		found, ok := got[opt.key]
 		if !ok {
 			return denyf(service.Name, "HostConfig.SecurityOpt",
-				"compose requires security_opt %q, request does not set it", opt.String())
+				"compose requires security_opt %q, found none", opt.text())
 		}
 		if opt.key == "no-new-privileges" {
 			// Turning the flag off restores privilege, leaving it on is fine.
-			if isTruthy(opt.value) != isTruthy(gotValue) {
+			if isTruthy(opt.value) != isTruthy(found.value) {
 				return denyf(service.Name, "HostConfig.SecurityOpt",
-					"compose requires security_opt %q, request sets %q", opt.String(), opt.key+"="+gotValue)
+					"compose requires security_opt %q, found %q", opt.text(), found.text())
 			}
 			continue
 		}
-		if gotValue != opt.value {
+		if found.value != opt.value {
+			// Neither side of a seccomp profile can be written out, so only that
+			// they differ is said.
+			if opt.key == "seccomp" {
+				return denyf(service.Name, "HostConfig.SecurityOpt",
+					"compose requires security_opt %q, found a different seccomp profile", opt.key)
+			}
 			return denyf(service.Name, "HostConfig.SecurityOpt",
-				"compose requires security_opt %q, request sets %q", opt.String(), opt.key+"="+gotValue)
+				"compose requires security_opt %q, found %q", opt.text(), found.text())
 		}
 	}
 
 	// Undeclared options are refused on create because their security impact varies.
 	if m != modeInspect {
-		for key, value := range got {
+		for key, found := range got {
 			if _, ok := allowed[key]; !ok {
 				return denyf(service.Name, "HostConfig.SecurityOpt",
-					"security option %q is not declared by compose", key+"="+value)
+					"security option %q is not declared by compose", found.text())
 			}
 		}
 	}
@@ -438,7 +443,7 @@ func compareNamespaces(service types.ServiceConfig, req *container.CreateRequest
 	gotCgroup, wantCgroup := strings.TrimSpace(string(hc.CgroupnsMode)), strings.TrimSpace(service.Cgroup)
 	if gotCgroup != wantCgroup {
 		return denyf(service.Name, "HostConfig.CgroupnsMode",
-			"compose declares %q, request asks for %q", wantCgroup, gotCgroup)
+			"compose declares %q, found %q", wantCgroup, gotCgroup)
 	}
 
 	pairs := []struct {
@@ -446,15 +451,14 @@ func compareNamespaces(service types.ServiceConfig, req *container.CreateRequest
 		want  string
 		got   string
 	}{
-		{"HostConfig.PidMode", string(hc.PidMode), service.Pid},
-		{"HostConfig.IpcMode", string(hc.IpcMode), service.Ipc},
-		{"HostConfig.UsernsMode", string(hc.UsernsMode), service.UserNSMode},
-		{"HostConfig.UTSMode", string(hc.UTSMode), service.Uts},
+		{"HostConfig.PidMode", service.Pid, string(hc.PidMode)},
+		{"HostConfig.IpcMode", service.Ipc, string(hc.IpcMode)},
+		{"HostConfig.UsernsMode", service.UserNSMode, string(hc.UsernsMode)},
+		{"HostConfig.UTSMode", service.Uts, string(hc.UTSMode)},
 	}
 	for _, p := range pairs {
 		if !sameNamespace(p.want, p.got) {
-			return denyf(service.Name, p.field,
-				"compose declares %q, request asks for %q", p.want, p.got)
+			return denyf(service.Name, p.field, "compose declares %q, found %q", p.want, p.got)
 		}
 	}
 	return nil
@@ -508,7 +512,7 @@ func compareDevices(service types.ServiceConfig, req *container.CreateRequest) e
 	}
 	if !slices.Equal(sortedDevices(wantDevices), sortedDevices(gotDevices)) {
 		return denyf(service.Name, "HostConfig.Devices",
-			"compose declares devices %v, request asks for %v", sortedDevices(wantDevices), sortedDevices(gotDevices))
+			"compose declares devices %v, found %v", sortedDevices(wantDevices), sortedDevices(gotDevices))
 	}
 
 	if err := equalSet(service.Name, "HostConfig.DeviceCgroupRules",
@@ -520,7 +524,7 @@ func compareDevices(service types.ServiceConfig, req *container.CreateRequest) e
 	gotRequests := normalizeDeviceRequests(hc.DeviceRequests)
 	if !slices.Equal(wantRequests, gotRequests) {
 		return denyf(service.Name, "HostConfig.DeviceRequests",
-			"compose declares device requests %v, request asks for %v", wantRequests, gotRequests)
+			"compose declares device requests %v, found %v", wantRequests, gotRequests)
 	}
 	return nil
 }
@@ -622,18 +626,18 @@ func boolValue(b *bool) bool {
 
 // compareHostDependentFields requires an exact match on the three fields that depend
 // on the host, since the proxy cannot say which value of a driver option is safer.
+// A driver option may hold credentials, so a refusal says that it differs, not what.
 func compareHostDependentFields(service types.ServiceConfig, req *container.CreateRequest) error {
 	hc := req.HostConfig
 
 	if err := equal(service.Name, "HostConfig.VolumeDriver", service.VolumeDriver, hc.VolumeDriver); err != nil {
 		return err
 	}
-	if err := equalMap(service.Name, "HostConfig.StorageOpt", service.StorageOpt, hc.StorageOpt); err != nil {
-		return err
+	if !maps.Equal(map[string]string(service.StorageOpt), hc.StorageOpt) {
+		return deny(service.Name, "HostConfig.StorageOpt", "storage options differ from compose")
 	}
-	if err := equalMap(service.Name, "HostConfig.Annotations",
-		map[string]string(service.Annotations), hc.Annotations); err != nil {
-		return err
+	if !maps.Equal(map[string]string(service.Annotations), hc.Annotations) {
+		return deny(service.Name, "HostConfig.Annotations", "annotations differ from compose")
 	}
 	return nil
 }
@@ -642,7 +646,7 @@ func compareNetworkDisabled(service types.ServiceConfig, req *container.CreateRe
 	wantDisabled := service.NetworkMode == "disabled"
 	if wantDisabled != req.Config.NetworkDisabled {
 		return denyf(service.Name, "Config.NetworkDisabled",
-			"compose implies NetworkDisabled=%t, request asks for %t", wantDisabled, req.Config.NetworkDisabled)
+			"compose implies NetworkDisabled=%t, found %t", wantDisabled, req.Config.NetworkDisabled)
 	}
 	return nil
 }
@@ -663,7 +667,7 @@ func comparePorts(service types.ServiceConfig, req *container.CreateRequest) err
 		}
 		if !sameBindings(want, bindings) {
 			return denyf(service.Name, "HostConfig.PortBindings",
-				"compose publishes %v for %s, request asks for %v", want, port, bindings)
+				"compose publishes %v for %s, found %v", want, port, bindings)
 		}
 	}
 	return nil
@@ -728,11 +732,11 @@ func compareNetworks(project *types.Project, service types.ServiceConfig, req *c
 	if service.NetworkMode != "" {
 		if service.NetworkMode != gotMode {
 			return denyf(service.Name, "HostConfig.NetworkMode",
-				"compose declares network_mode %q, request asks for %q", service.NetworkMode, gotMode)
+				"compose declares network_mode %q, found %q", service.NetworkMode, gotMode)
 		}
 		if len(endpoints) != 0 {
 			return denyf(service.Name, "NetworkingConfig.EndpointsConfig",
-				"network_mode %q takes no network endpoints, request attaches to %d", service.NetworkMode, len(endpoints))
+				"network_mode %q takes no network endpoints, found %d", service.NetworkMode, len(endpoints))
 		}
 		return nil
 	}
@@ -742,11 +746,11 @@ func compareNetworks(project *types.Project, service types.ServiceConfig, req *c
 	if len(project.Networks) == 0 {
 		if gotMode != "none" {
 			return denyf(service.Name, "HostConfig.NetworkMode",
-				"compose project declares no network, request asks for network mode %q", gotMode)
+				"compose project declares no network, found network mode %q", gotMode)
 		}
 		if len(endpoints) != 0 {
 			return denyf(service.Name, "NetworkingConfig.EndpointsConfig",
-				"compose project declares no network, request attaches to %d networks", len(endpoints))
+				"compose project declares no network, found %d networks attached", len(endpoints))
 		}
 		return nil
 	}
@@ -761,14 +765,14 @@ func compareNetworks(project *types.Project, service types.ServiceConfig, req *c
 	}
 	if gotMode != wantMode {
 		return denyf(service.Name, "HostConfig.NetworkMode",
-			"compose attaches this service to %q, request asks for network mode %q", wantMode, gotMode)
+			"compose attaches this service to %q, found network mode %q", wantMode, gotMode)
 	}
 
 	// Endpoints must be exactly the service's networks. An extra one is an
 	// undeclared attachment, a missing one is a container Compose did not describe.
 	if len(endpoints) != len(keys) {
 		return denyf(service.Name, "NetworkingConfig.EndpointsConfig",
-			"compose attaches this service to %d networks, request attaches to %d", len(keys), len(endpoints))
+			"compose attaches this service to %d networks, found %d", len(keys), len(endpoints))
 	}
 	for _, key := range keys {
 		name, err := compose.NetworkName(project, key)
@@ -777,7 +781,7 @@ func compareNetworks(project *types.Project, service types.ServiceConfig, req *c
 		}
 		if !endpoints[name] {
 			return denyf(service.Name, "NetworkingConfig.EndpointsConfig",
-				"network %q (%s) is not attached by the request", name, key)
+				"network %q (%s) is not attached", name, key)
 		}
 	}
 	return nil

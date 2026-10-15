@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -27,7 +28,8 @@ func (p *Proxy) forwardStream(w http.ResponseWriter, r *http.Request, body []byt
 
 	upstream, err := p.dialer(r.Context())
 	if err != nil {
-		p.writeError(w, http.StatusBadGateway, "upstream docker daemon is unreachable")
+		p.logger.Warn("could not connect to the upstream docker daemon", slog.String("error", err.Error()))
+		p.writeError(w, http.StatusBadGateway, "the request to the upstream docker daemon could not be completed")
 		return
 	}
 

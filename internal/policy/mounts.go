@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"maps"
 	"path/filepath"
 	"strconv"
@@ -59,6 +60,10 @@ func compareMounts(project *types.Project, service types.ServiceConfig, req *con
 
 	expected, err := expectedMounts(project, service)
 	if err != nil {
+		if pe, ok := Inspect(err); ok {
+			pe.Service = service.Name
+			return pe
+		}
 		return err
 	}
 
@@ -114,86 +119,81 @@ func compareMounts(project *types.Project, service types.ServiceConfig, req *con
 	for target, want := range expected {
 		if _, ok := seen[target]; !ok {
 			return denyf(service.Name, "HostConfig",
-				"compose declares a %s mount at %q, request does not mount it", want.kind, target)
+				"compose declares a %s mount at %q, found none", want.kind, target)
 		}
 	}
 	return nil
 }
 
-// compareMountSpec requires an exact match on every property, because an option
-// like create_host_path or a volume subpath only means one thing.
+// A source, a driver option and a label stay unwritten, since the Compose side of
+// them may name a path or a credential the project keeps to itself.
 func compareMountSpec(service types.ServiceConfig, origin string, want, got mountSpec) error {
 	if want.kind != got.kind {
 		return denyf(service.Name, origin,
-			"container path %q is a %s mount in compose, request mounts it as %s", want.target, want.kind, got.kind)
+			"container path %q is a %s mount in compose, found a %s mount", want.target, want.kind, got.kind)
 	}
 	if want.source != got.source {
-		return denyf(service.Name, origin,
-			"container path %q is sourced from %q in compose, request uses %q", want.target, want.source, got.source)
+		return denyf(service.Name, origin, "container path %q: mount source differs from compose", want.target)
 	}
 	if want.readOnly != got.readOnly {
 		return denyf(service.Name, origin,
-			"container path %q is read_only=%t in compose, request mounts it read_only=%t",
+			"container path %q is read_only=%t in compose, found %t",
 			want.target, want.readOnly, got.readOnly)
 	}
 	if want.propagation != got.propagation {
 		return denyf(service.Name, origin,
-			"container path %q declares bind propagation %q in compose, request asks for %q",
+			"container path %q declares bind propagation %q in compose, found %q",
 			want.target, want.propagation, got.propagation)
 	}
 	if want.selinux != got.selinux {
 		return denyf(service.Name, origin,
-			"container path %q declares SELinux relabelling %q in compose, request asks for %q",
+			"container path %q declares SELinux relabelling %q in compose, found %q",
 			want.target, want.selinux, got.selinux)
 	}
 	if want.nonRecursive != got.nonRecursive {
 		return denyf(service.Name, origin,
-			"container path %q declares non-recursive binding in compose, request asks for %v",
-			want.target, got.nonRecursive)
+			"container path %q: NonRecursive differs (compose: %t, found: %t)",
+			want.target, want.nonRecursive, got.nonRecursive)
 	}
 	if want.readOnlyNonRecursive != got.readOnlyNonRecursive {
 		return denyf(service.Name, origin,
-			"container path %q declares writable non-recursive binding in compose, request asks for %v",
-			want.target, got.readOnlyNonRecursive)
+			"container path %q: ReadOnlyNonRecursive differs (compose: %t, found: %t)",
+			want.target, want.readOnlyNonRecursive, got.readOnlyNonRecursive)
 	}
 	if want.readOnlyForceRecursive != got.readOnlyForceRecursive {
 		return denyf(service.Name, origin,
-			"container path %q declares forced read-only recursion in compose, request asks for %v",
-			want.target, got.readOnlyForceRecursive)
+			"container path %q: ReadOnlyForceRecursive differs (compose: %t, found: %t)",
+			want.target, want.readOnlyForceRecursive, got.readOnlyForceRecursive)
 	}
 	if want.createMountpoint != got.createMountpoint {
 		return denyf(service.Name, origin,
-			"container path %q declares create_host_path=%t in compose, request asks for %t",
+			"container path %q declares create_host_path=%t in compose, found %t",
 			want.target, want.createMountpoint, got.createMountpoint)
 	}
 	if want.volumeSubpath != got.volumeSubpath {
 		return denyf(service.Name, origin,
-			"container path %q declares volume subpath %q in compose, request asks for %q",
+			"container path %q declares volume subpath %q in compose, found %q",
 			want.target, want.volumeSubpath, got.volumeSubpath)
 	}
 	if want.volumeNoCopy != got.volumeNoCopy {
 		return denyf(service.Name, origin,
-			"container path %q declares nocopy=%t in compose, request asks for %t",
+			"container path %q declares nocopy=%t in compose, found %t",
 			want.target, want.volumeNoCopy, got.volumeNoCopy)
 	}
 	if want.volumeDriver != got.volumeDriver {
 		return denyf(service.Name, origin,
-			"container path %q declares volume driver %q in compose, request asks for %q",
+			"container path %q declares volume driver %q in compose, found %q",
 			want.target, want.volumeDriver, got.volumeDriver)
 	}
 	if !maps.Equal(want.volumeDriverOpts, got.volumeDriverOpts) {
-		return denyf(service.Name, origin,
-			"container path %q declares volume driver options %v in compose, request asks for %v",
-			want.target, want.volumeDriverOpts, got.volumeDriverOpts)
+		return denyf(service.Name, origin, "container path %q: volume driver options differ from compose", want.target)
 	}
 	if !maps.Equal(want.volumeLabels, got.volumeLabels) {
-		return denyf(service.Name, origin,
-			"container path %q declares volume labels %v in compose, request asks for %v",
-			want.target, want.volumeLabels, got.volumeLabels)
+		return denyf(service.Name, origin, "container path %q: volume labels differ from compose", want.target)
 	}
 	if want.imageSubpath != got.imageSubpath {
 		return denyf(service.Name, origin,
-			"container path %q declares image subpath %q in compose, request asks for %q",
+			"container path %q declares image subpath %q in compose, found %q",
 			want.target, want.imageSubpath, got.imageSubpath)
 	}
 	return nil
@@ -481,7 +481,7 @@ func mountSpecFromTmpfs(path, options string) mountSpec {
 }
 
 func errMalformedBind(raw, why string) error {
-	return denyf("", "HostConfig.Binds", "bind entry %q is unusable: %s", raw, why)
+	return fmt.Errorf("bind entry %q is unusable: %s", raw, why)
 }
 
 // tmpfsOptionsReadOnly reports whether a tmpfs option string asks for a read-only

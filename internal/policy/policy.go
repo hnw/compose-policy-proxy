@@ -90,6 +90,9 @@ type Decision struct {
 	Endpoint string
 	Target   string
 	Service  string
+	// Resource is the Compose key a network or volume create matched. It is not a
+	// service name, so it is recorded apart from one.
+	Resource string
 	// Filters is the `filters` query the proxy forwards instead of the client's,
 	// to pin a list to the authorized resources. The Engine reads a name filter as a regex.
 	Filters string
@@ -110,66 +113,66 @@ func (p *Policy) Authorize(ctx context.Context, req *Request) (Decision, error) 
 		return decision, err
 	}
 
-	decision.Service, decision.Filters, err = p.decide(ctx, op, req)
+	decision.Service, decision.Resource, decision.Filters, err = p.decide(ctx, op, req)
 	return decision, err
 }
 
 // decide applies the rules that depend on what the request addresses. The
 // endpoint has already been resolved, version checked and method checked.
-func (p *Policy) decide(ctx context.Context, op operation, req *Request) (string, string, error) {
+func (p *Policy) decide(ctx context.Context, op operation, req *Request) (service, resource, filters string, err error) {
 	query := req.URL.Query()
 
 	switch op.Endpoint {
 	case "/_ping", "/version", "/info":
 		// API negotiation. No resource is addressed, so there is nothing left to
 		// authorize once the path, version and method have been checked.
-		return "", "", nil
+		return "", "", "", nil
 
 	case "/containers/create":
 		var create container.CreateRequest
 		if err := decodeRequest(req.Body, "container create request", &create); err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 		service, err := p.matchCreate(&create)
-		return service, "", err
+		return service, "", "", err
 
 	case "/containers/json":
 		filters, err := p.checkListScope(kindContainer, query.Get("filters"))
-		return "", filters, err
+		return "", "", filters, err
 
 	case "/images/create":
-		return "", "", authorizePull(p.project, query)
+		return "", "", "", authorizePull(p.project, query)
 
 	case "/images/{name}/json":
 		if !imageDeclared(p.project, op.Target) {
-			return "", "", denyf("", "",
+			return "", "", "", denyf("", "",
 				"image %q is not declared by compose project %q", op.Target, p.project.Name)
 		}
-		return "", "", nil
+		return "", "", "", nil
 
 	case "/networks":
 		filters, err := p.checkListScope(kindNetwork, query.Get("filters"))
-		return "", filters, err
+		return "", "", filters, err
 
 	case "/networks/create":
 		var create network.CreateRequest
 		if err := decodeRequest(req.Body, "network create request", &create); err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
-		service, err := matchNetworkCreate(p.project, create)
-		return service, "", err
+		key, err := matchNetworkCreate(p.project, create)
+		return "", key, "", err
 
 	case "/volumes":
 		filters, err := p.checkListScope(kindVolume, query.Get("filters"))
-		return "", filters, err
+		return "", "", filters, err
 
 	case "/volumes/create":
 		var create volume.CreateOptions
 		if err := decodeRequest(req.Body, "volume create request", &create); err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
-		service, err := matchVolumeCreate(p.project, create)
-		return service, "", err
+		key, err := matchVolumeCreate(p.project, create)
+		return "", key, "", err
 	}
 
 	// Everything left names one resource. A container must be inspected before it
@@ -177,24 +180,24 @@ func (p *Policy) decide(ctx context.Context, op operation, req *Request) (string
 	switch {
 	case strings.HasPrefix(op.Endpoint, "/containers/"):
 		service, err := p.authorizeContainer(ctx, op, req.Method)
-		return service, "", err
+		return service, "", "", err
 	case strings.HasPrefix(op.Endpoint, "/networks/"):
 		if !networkIsDeclared(p.project, op.Target) {
-			return "", "", denyf("", "",
+			return "", "", "", denyf("", "",
 				"network %q is not declared by compose project %q", op.Target, p.project.Name)
 		}
-		return "", "", nil
+		return "", "", "", nil
 	case strings.HasPrefix(op.Endpoint, "/volumes/"):
 		if !volumeIsDeclared(p.project, op.Target) {
-			return "", "", denyf("", "",
+			return "", "", "", denyf("", "",
 				"volume %q is not declared by compose project %q", op.Target, p.project.Name)
 		}
-		return "", "", nil
+		return "", "", "", nil
 	}
 
 	// An allowlisted endpoint with no rule above is refused, because joining the
 	// allowlist must not authorize an operation by itself.
-	return "", "", errUnhandledEndpoint
+	return "", "", "", errUnhandledEndpoint
 }
 
 // authorizeContainer settles ownership of an existing container and then whether

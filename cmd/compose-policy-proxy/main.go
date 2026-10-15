@@ -75,7 +75,7 @@ func run() error {
 
 	eng, err := engine.New(*dockerHost)
 	if err != nil {
-		return fmt.Errorf("connect to docker daemon at %s: %w", *dockerHost, err)
+		return fmt.Errorf("open the docker client for %s: %w", *dockerHost, err)
 	}
 
 	// The Engine's API range is read once, before the socket exists, so a daemon this

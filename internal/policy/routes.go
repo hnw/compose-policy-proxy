@@ -71,11 +71,20 @@ func CapAPIVersion(engineVersion string) string {
 // the Engine's oldest must not exceed the proxy's newest, and the Engine's newest must
 // not fall below the proxy's oldest.
 func CheckEngineAPIVersion(engineMin, engineMax string) error {
-	if oldest, err := compareVersion(engineMin, maxAPIVersion); err != nil || oldest > 0 {
+	oldest, err := compareVersion(engineMin, maxAPIVersion)
+	if err != nil {
+		// Nothing is known about the order, so the message does not claim one.
+		return fmt.Errorf("the docker engine reports an API version %q that cannot be read: %w", engineMin, err)
+	}
+	if oldest > 0 {
 		return fmt.Errorf("docker engine requires API version %q or newer, which the %q this proxy validates cannot serve; upgrade the proxy",
 			engineMin, maxAPIVersion)
 	}
-	if newest, err := compareVersion(engineMax, minAPIVersion); err != nil || newest < 0 {
+	newest, err := compareVersion(engineMax, minAPIVersion)
+	if err != nil {
+		return fmt.Errorf("the docker engine reports an API version %q that cannot be read: %w", engineMax, err)
+	}
+	if newest < 0 {
 		return fmt.Errorf("docker engine serves up to API version %q, older than the %q this proxy needs; upgrade the engine",
 			engineMax, minAPIVersion)
 	}
@@ -120,7 +129,7 @@ func resolve(path string) (operation, error) {
 		}
 	}
 	return operation{}, denyf("", "",
-		"docker API endpoint %q is not allowed; this proxy implements only docker compose run", rest)
+		"docker API endpoint %q is not allowed", rest)
 }
 
 func splitVersion(path string) (version, rest string) {

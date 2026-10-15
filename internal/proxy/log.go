@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 )
 
 type event struct {
@@ -13,6 +14,9 @@ type event struct {
 	Endpoint string
 	Target   string
 	Service  string
+	// Resource is the Compose key a network or a volume create matched, which is
+	// not a service name.
+	Resource string
 	// Field is the Docker field the policy found wrong. It is empty when the
 	// refusal names no field, such as a container of another project.
 	Field string
@@ -32,6 +36,16 @@ func (e event) log(logger *slog.Logger) {
 	}
 	if e.Service != "" {
 		attrs = append(attrs, slog.String("service", e.Service))
+	}
+	if e.Resource != "" {
+		name := "resource"
+		switch {
+		case strings.HasPrefix(e.Endpoint, "/networks"):
+			name = "network"
+		case strings.HasPrefix(e.Endpoint, "/volumes"):
+			name = "volume"
+		}
+		attrs = append(attrs, slog.String(name, e.Resource))
 	}
 	if e.Field != "" {
 		attrs = append(attrs, slog.String("field", e.Field))

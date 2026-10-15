@@ -92,6 +92,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Endpoint: decision.Endpoint,
 		Target:   decision.Target,
 		Service:  decision.Service,
+		Resource: decision.Resource,
 	}.log(p.logger)
 
 	if isStreamingEndpoint(decision.Endpoint) {
@@ -126,7 +127,9 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, body []byte, que
 
 	resp, err := p.upstream.Do(out) //nolint:gosec // G704: upstream always uses the configured Unix socket
 	if err != nil {
-		p.writeError(w, http.StatusBadGateway, "upstream docker daemon is unreachable")
+		p.logger.Warn("upstream request failed",
+			slog.String("endpoint", endpoint), slog.String("error", err.Error()))
+		p.writeError(w, http.StatusBadGateway, "the request to the upstream docker daemon could not be completed")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -139,7 +142,9 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, body []byte, que
 	case "/version":
 		capVersionHeader(resp.Header)
 		if err := capVersionBody(resp); err != nil {
-			p.writeError(w, http.StatusBadGateway, "upstream docker daemon is unreachable")
+			p.logger.Warn("could not rewrite the upstream version answer",
+				slog.String("error", err.Error()))
+			p.writeError(w, http.StatusBadGateway, "the version the upstream docker daemon reported could not be read")
 			return
 		}
 	}
@@ -188,11 +193,7 @@ func (p *Proxy) deny(w http.ResponseWriter, r *http.Request, decision policy.Dec
 	ev.log(p.logger)
 
 	// The client is told which field was wrong, because "denied" alone is not actionable.
-	message := ev.Detail
-	if pe, ok := policy.Inspect(err); ok && pe.Field != "" {
-		message = pe.Field + ": " + pe.Detail
-	}
-	p.writeError(w, http.StatusForbidden, message)
+	p.writeError(w, http.StatusForbidden, err.Error())
 }
 
 func (p *Proxy) writeError(w http.ResponseWriter, code int, message string) {

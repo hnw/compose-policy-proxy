@@ -17,19 +17,20 @@ func (e *Error) Error() string {
 	var where string
 	switch {
 	case e.Service != "" && e.Field != "":
-		where = fmt.Sprintf("service %q field %q", e.Service, e.Field)
+		where = fmt.Sprintf("service %q: %s", e.Service, e.Field)
 	case e.Field != "":
-		where = fmt.Sprintf("field %q", e.Field)
+		where = e.Field
 	case e.Service != "":
 		where = fmt.Sprintf("service %q", e.Service)
 	}
-	if where == "" {
+	switch {
+	case where == "":
 		return e.Detail
-	}
-	if e.Detail == "" {
+	case e.Detail == "":
 		return where
+	default:
+		return where + ": " + e.Detail
 	}
-	return fmt.Sprintf("%s: %s", where, e.Detail)
 }
 
 func denyf(service, field, format string, args ...any) *Error {
@@ -49,7 +50,7 @@ func Malformed(format string, args ...any) error {
 // errUnhandledEndpoint refuses an allowlisted endpoint that no decision rule
 // covers. The endpoint is already in the Decision and the log line.
 var errUnhandledEndpoint = denyf("", "",
-	"no authorization rule covers this docker API operation; this proxy implements only docker compose run")
+	"no authorization rule covers this docker API operation")
 
 // Inspect reports whether err is a policy denial and returns it as *Error.
 func Inspect(err error) (*Error, bool) {

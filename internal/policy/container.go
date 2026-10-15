@@ -24,29 +24,45 @@ func (p *Policy) matchCreate(req *container.CreateRequest) (string, error) {
 		return "", deny("", "request", "container config is empty")
 	}
 	project := p.project
-	candidates := candidateServices(project, req.Labels[LabelService])
+	hint := req.Labels[LabelService]
+	candidates := candidateServices(project, hint)
+	if len(candidates) == 0 {
+		return "", deny("", "service", "project "+project.Name+" declares no service")
+	}
 
-	var firstErr error
+	// A refusal names the service the request pointed at, or the only one using
+	// its image, since a field of an unrelated service would mislead.
+	var hintErr, imageErr error
+	imageUses := 0
 	for _, service := range candidates {
 		err := compareService(project, service, req, modeCreate)
-		switch {
-		case err == nil:
+		if err == nil {
 			if err := p.protected.checkCreate(service.Name); err != nil {
 				return "", err
 			}
 			return service.Name, nil
-		case firstErr == nil:
-			firstErr = err
+		}
+		if service.Name == hint {
+			hintErr = err
+		}
+		if compose.ImageName(project, service) == req.Config.Image {
+			imageUses++
+			imageErr = err
 		}
 	}
-	if firstErr == nil {
-		return "", deny("", "service", "project "+project.Name+" declares no service")
+	switch {
+	case hintErr != nil:
+		return "", hintErr
+	case imageUses == 1:
+		return "", imageErr
+	case imageUses == 0:
+		return "", denyf("", "", "no Compose service matches image %q", req.Config.Image)
 	}
-	return "", firstErr
+	return "", deny("", "", "no Compose service matches this request")
 }
 
 // candidateServices orders services so the one named by the request label is
-// tried first. Order affects only which field a refusal names.
+// tried first.
 func candidateServices(project *types.Project, hint string) []types.ServiceConfig {
 	all := compose.Services(project)
 	out := make([]types.ServiceConfig, 0, len(all))

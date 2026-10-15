@@ -80,7 +80,7 @@ func (p *Policy) checkListScope(kind, filters string) (string, error) {
 		return pinNameFilter(byKey, nameValues)
 	default:
 		return "", denyf("", "",
-			"list request must filter on %s=%s so that it cannot observe other projects",
+			"list request must filter on %s=%s or on a declared name, so that it cannot observe other projects",
 			LabelProject, p.project.Name)
 	}
 }

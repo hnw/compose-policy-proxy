@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -288,6 +289,22 @@ func TestMatchNetworkCreateDeniesExternalAndForeign(t *testing.T) {
 			t.Error("creating a network without the project management label was accepted")
 		}
 	})
+	t.Run("mismatched network label", func(t *testing.T) {
+		req := network.CreateRequest{
+			Name: "demo_frontend",
+			CreateOptions: network.CreateOptions{
+				Labels: map[string]string{LabelProject: "demo", LabelNetwork: "somewhere-else"},
+			},
+		}
+		_, err := matchNetworkCreate(p, req)
+		pe, ok := Inspect(err)
+		if !ok {
+			t.Fatal("creating a network with a mismatched label was accepted")
+		}
+		if !strings.Contains(pe.Detail, LabelNetwork) || strings.Contains(pe.Detail, LabelProject) {
+			t.Errorf("refusal = %q, want it to name only the label that differs", pe.Detail)
+		}
+	})
 	t.Run("ingress network", func(t *testing.T) {
 		req := network.CreateRequest{
 			Name:          "demo_frontend",
@@ -376,6 +393,18 @@ func TestMatchVolumeCreate(t *testing.T) {
 		req.Labels = nil
 		if _, err := matchVolumeCreate(p, req); err == nil {
 			t.Error("creating a volume without the project management label was accepted")
+		}
+	})
+	t.Run("mismatched volume label", func(t *testing.T) {
+		req := base()
+		req.Labels[LabelVolume] = "somewhere-else"
+		_, err := matchVolumeCreate(p, req)
+		pe, ok := Inspect(err)
+		if !ok {
+			t.Fatal("creating a volume with a mismatched label was accepted")
+		}
+		if !strings.Contains(pe.Detail, LabelVolume) || strings.Contains(pe.Detail, LabelProject) {
+			t.Errorf("refusal = %q, want it to name only the label that differs", pe.Detail)
 		}
 	})
 	t.Run("cluster volume", func(t *testing.T) {

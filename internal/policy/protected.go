@@ -59,7 +59,7 @@ func (p protectedServices) checkCreate(service string) error {
 		return nil
 	}
 	return deny(service, "",
-		"service mounts the Docker socket this proxy guards, so it must be started and stopped outside the restricted socket")
+		"service mounts the Docker socket this proxy guards, so its containers must not be created or controlled through this proxy")
 }
 
 // checkContainerOperation allows observation and refuses control on a protected service's

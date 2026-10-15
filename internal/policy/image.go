@@ -59,7 +59,7 @@ func imageDeclared(project *types.Project, ref string) bool {
 // credentials arrive in X-Registry-Auth and are forwarded untouched, never decided on.
 func authorizePull(project *types.Project, q url.Values) error {
 	if fromSrc := q.Get("fromSrc"); fromSrc != "" {
-		return denyf("", "fromImage",
+		return denyf("", "fromSrc",
 			"compose never pulls from %q; only a declared image reference may be pulled", fromSrc)
 	}
 
@@ -76,7 +76,7 @@ func authorizePull(project *types.Project, q url.Values) error {
 		var err error
 		pullAll, err = parseBool(v)
 		if err != nil {
-			return denyf("", "", "pull parameter all=%q is not a boolean", v)
+			return denyf("", "all", "%q is not a boolean", v)
 		}
 	}
 	return allowPull(project, ref, pullAll)
@@ -86,12 +86,12 @@ func authorizePull(project *types.Project, q url.Values) error {
 // refused because it would reach beyond what the project declared.
 func allowPull(project *types.Project, ref string, pullAll bool) error {
 	if pullAll {
-		return deny("", "fromImage",
-			"compose does not declare a bulk pull target, request asks to pull all images")
+		return deny("", "all",
+			"compose declares no bulk pull target, so pulling every image is refused")
 	}
 	if strings.Contains(ref, ",") {
 		return denyf("", "fromImage",
-			"compose does not declare a bulk pull target, request asks for %q", ref)
+			"compose declares no bulk pull target, found %q", ref)
 	}
 	if !imageDeclared(project, ref) {
 		return denyf("", "fromImage",

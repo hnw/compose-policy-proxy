@@ -2,6 +2,8 @@ package policy
 
 import (
 	"maps"
+	"slices"
+	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/docker/api/types/network"
@@ -48,7 +50,7 @@ func matchNetworkCreate(project *types.Project, req network.CreateRequest) (stri
 	}
 	if !maps.Equal(map[string]string(cfg.DriverOpts), opts.Options) {
 		return "", denyf("", "Options",
-			"compose declares driver_opts %v for network %q, request asks for %v", cfg.DriverOpts, req.Name, opts.Options)
+			"driver options for network %q differ from compose", req.Name)
 	}
 	if opts.Internal != cfg.Internal {
 		return "", denyf("", "Internal",
@@ -66,7 +68,7 @@ func matchNetworkCreate(project *types.Project, req network.CreateRequest) (stri
 	}
 	if opts.ConfigFrom != nil {
 		return "", denyf("", "ConfigFrom",
-			"compose never attaches a container to a config-only network")
+			"compose never creates a config-only network")
 	}
 	if opts.Scope != "" && opts.Scope != "local" && opts.Scope != "swarm" {
 		return "", denyf("", "Scope",
@@ -86,9 +88,9 @@ func matchNetworkCreate(project *types.Project, req network.CreateRequest) (stri
 	wantLabels := copyLabels(cfg.Labels)
 	wantLabels[LabelProject] = project.Name
 	wantLabels[LabelNetwork] = key
-	if !hasLabel(wantLabels, opts.Labels) {
+	if mismatched := mismatchedLabels(wantLabels, opts.Labels); len(mismatched) != 0 {
 		return "", denyf("", "Labels",
-			"network %q is missing the compose project management label %s=%s", req.Name, LabelProject, project.Name)
+			"network %q has missing or mismatched compose labels: %s", req.Name, strings.Join(mismatched, ", "))
 	}
 
 	if err := compareIPAM(cfg.Ipam, opts.IPAM, req.Name); err != nil {
@@ -116,63 +118,66 @@ func compareIPAM(want types.IPAMConfig, got *network.IPAM, name string) error {
 		}
 		if len(got.Config) != 0 {
 			return denyf("", "IPAM",
-				"compose declares no IPAM for network %q, request asks for %+v", name, got)
+				"compose declares no IPAM for network %q, found %d pools", name, len(got.Config))
 		}
 		// Compose sends no IPAM at all for such a network, so a driver or option
 		// here was the client's choice of a plugin. An empty driver is the built-in one.
 		if got.Driver != "" && got.Driver != builtinIPAMDriver {
 			return denyf("", "IPAM.Driver",
-				"compose declares no IPAM driver for network %q, request asks for %q", name, got.Driver)
+				"compose declares no IPAM driver for network %q, found %q", name, got.Driver)
 		}
 		if len(got.Options) != 0 {
 			return denyf("", "IPAM.Options",
-				"compose declares no IPAM options for network %q, request asks for %v", name, got.Options)
+				"compose declares no IPAM options for network %q, found some", name)
 		}
 		return nil
 	}
 	if got == nil {
 		return denyf("", "IPAM",
-			"compose declares IPAM for network %q, request asks for none", name)
+			"compose declares IPAM for network %q, found none", name)
 	}
 	if got.Driver != want.Driver {
 		return denyf("", "IPAM.Driver",
-			"compose declares ipam driver %q for network %q, request asks for %q", want.Driver, name, got.Driver)
+			"compose declares ipam driver %q for network %q, found %q", want.Driver, name, got.Driver)
 	}
 	if !maps.Equal(map[string]string(want.Options), got.Options) {
-		return denyf("", "IPAM.Options",
-			"compose declares ipam options %v for network %q, request asks for %v", want.Options, name, got.Options)
+		return denyf("", "IPAM.Options", "IPAM options for network %q differ from compose", name)
 	}
 	if len(got.Config) != len(want.Config) {
 		return denyf("", "IPAM.Config",
-			"compose declares %d IPAM pools for network %q, request asks for %d", len(want.Config), name, len(got.Config))
+			"compose declares %d IPAM pools for network %q, found %d", len(want.Config), name, len(got.Config))
 	}
 	for i, pool := range want.Config {
 		gotPool := got.Config[i]
 		if !sameIP(pool.Subnet, gotPool.Subnet) {
 			return denyf("", "IPAM.Config.Subnet",
-				"compose declares subnet %q for network %q, request asks for %q", pool.Subnet, name, gotPool.Subnet)
+				"compose declares subnet %q for network %q, found %q", pool.Subnet, name, gotPool.Subnet)
 		}
 		if !sameIP(pool.Gateway, gotPool.Gateway) {
 			return denyf("", "IPAM.Config.Gateway",
-				"compose declares gateway %q for network %q, request asks for %q", pool.Gateway, name, gotPool.Gateway)
+				"compose declares gateway %q for network %q, found %q", pool.Gateway, name, gotPool.Gateway)
 		}
 		if !sameIP(pool.IPRange, gotPool.IPRange) {
 			return denyf("", "IPAM.Config.IPRange",
-				"compose declares ip_range %q for network %q, request asks for %q", pool.IPRange, name, gotPool.IPRange)
+				"compose declares ip_range %q for network %q, found %q", pool.IPRange, name, gotPool.IPRange)
 		}
 		if !maps.Equal(map[string]string(pool.AuxiliaryAddresses), gotPool.AuxAddress) {
 			return denyf("", "IPAM.Config.AuxiliaryAddresses",
-				"compose declares aux_addresses %v for network %q, request asks for %v", pool.AuxiliaryAddresses, name, gotPool.AuxAddress)
+				"auxiliary addresses for network %q differ from compose", name)
 		}
 	}
 	return nil
 }
 
-func hasLabel(required, got map[string]string) bool {
+// mismatchedLabels returns the labels the request lacks or states differently, in a
+// stable order. Only names are shown, since a value may be one to keep private.
+func mismatchedLabels(required, got map[string]string) []string {
+	var out []string
 	for k, v := range required {
 		if gv, ok := got[k]; !ok || gv != v {
-			return false
+			out = append(out, k)
 		}
 	}
-	return true
+	slices.Sort(out)
+	return out
 }

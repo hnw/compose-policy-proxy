@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -129,6 +130,10 @@ func mustAllow(t *testing.T, what string, mutate func(service *types.ServiceConf
 // mustDeny runs a mutation that must be refused, and checks which field the
 // refusal names, so that a refusal for an unrelated field does not pass.
 func mustDeny(t *testing.T, what, wantField string, mutate func(service *types.ServiceConfig, req *container.CreateRequest)) {
+	mustDenyDetail(t, what, wantField, "", mutate)
+}
+
+func mustDenyDetail(t *testing.T, what, wantField, wantDetail string, mutate func(service *types.ServiceConfig, req *container.CreateRequest)) {
 	t.Helper()
 	project, service, req := fixture()
 	mutate(&service, req)
@@ -142,6 +147,9 @@ func mustDeny(t *testing.T, what, wantField string, mutate func(service *types.S
 	}
 	if pe.Field != wantField {
 		t.Fatalf("%s: expected a refusal on field %q, got %q (%s)", what, wantField, pe.Field, pe.Detail)
+	}
+	if wantDetail != "" && pe.Detail != wantDetail {
+		t.Fatalf("%s: detail = %q, want %q", what, pe.Detail, wantDetail)
 	}
 }
 
@@ -241,6 +249,25 @@ func TestDeniesSecurityOptionAdded(t *testing.T) {
 	})
 }
 
+func TestSeccompProfileIsNotWrittenOut(t *testing.T) {
+	const secret = "S3cr3t-compose-only"
+	project, service, req := fixture()
+	service.SecurityOpt = []string{`seccomp={"defaultAction":"SCMP_ACT_ERRNO","note":"` + secret + `"}`}
+	req.HostConfig.SecurityOpt = []string{`seccomp={"defaultAction":"SCMP_ACT_ALLOW"}`}
+
+	err := compareService(project, service, req, modeCreate)
+	pe, ok := Inspect(err)
+	if !ok {
+		t.Fatalf("a changed seccomp profile was accepted")
+	}
+	if strings.Contains(pe.Detail, secret) {
+		t.Errorf("the refusal writes out %q: %q", secret, pe.Detail)
+	}
+	if want := `found a different seccomp profile`; !strings.Contains(pe.Detail, want) {
+		t.Errorf("detail = %q, want it to mention %q", pe.Detail, want)
+	}
+}
+
 func TestDeniesReadOnlyRootfsRemoved(t *testing.T) {
 	mustDeny(t, "a writable root filesystem", "HostConfig.ReadonlyRootfs", func(_ *types.ServiceConfig, req *container.CreateRequest) {
 		req.HostConfig.ReadonlyRootfs = false
@@ -288,17 +315,19 @@ func TestDeniesNamespaceChanged(t *testing.T) {
 	cases := []struct {
 		name   string
 		field  string
+		detail string
 		mutate func(*container.HostConfig)
 	}{
-		{"pid", "HostConfig.PidMode", func(h *container.HostConfig) { h.PidMode = "private" }},
-		{"ipc", "HostConfig.IpcMode", func(h *container.HostConfig) { h.IpcMode = "private" }},
-		{"cgroup", "HostConfig.CgroupnsMode", func(h *container.HostConfig) { h.CgroupnsMode = "private" }},
-		{"userns", "HostConfig.UsernsMode", func(h *container.HostConfig) { h.UsernsMode = "host" }},
-		{"uts", "HostConfig.UTSMode", func(h *container.HostConfig) { h.UTSMode = "private" }},
+		{"pid", "HostConfig.PidMode", `compose declares "host", found "private"`,
+			func(h *container.HostConfig) { h.PidMode = "private" }},
+		{"ipc", "HostConfig.IpcMode", "", func(h *container.HostConfig) { h.IpcMode = "private" }},
+		{"cgroup", "HostConfig.CgroupnsMode", "", func(h *container.HostConfig) { h.CgroupnsMode = "private" }},
+		{"userns", "HostConfig.UsernsMode", "", func(h *container.HostConfig) { h.UsernsMode = "host" }},
+		{"uts", "HostConfig.UTSMode", "", func(h *container.HostConfig) { h.UTSMode = "private" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mustDeny(t, "a changed "+tc.name+" namespace", tc.field, func(_ *types.ServiceConfig, req *container.CreateRequest) {
+			mustDenyDetail(t, "a changed "+tc.name+" namespace", tc.field, tc.detail, func(_ *types.ServiceConfig, req *container.CreateRequest) {
 				tc.mutate(req.HostConfig)
 			})
 		})
@@ -449,23 +478,25 @@ func TestDeniesLegacyConfigVolumes(t *testing.T) {
 	})
 }
 
-// Which of two declarations for one container path the daemon would honour is not
-// recoverable, so the duplicate is refused rather than resolved.
-func TestDeniesContainerPathDeclaredTwice(t *testing.T) {
+func TestDeniesUnresolvableDeclaredMounts(t *testing.T) {
 	cases := []struct {
 		name    string
+		field   string
 		project func(*types.Project)
 		service func(*types.ServiceConfig)
 	}{
-		{"a secret at a mounted path", func(p *types.Project) {
+		{"a secret at a mounted path", "volumes", func(p *types.Project) {
 			p.Secrets = types.Secrets{"token": {File: projectDir + "/token"}}
 		}, func(s *types.ServiceConfig) {
 			s.Secrets = []types.ServiceSecretConfig{{Source: "token", Target: "/app/config"}}
 		}},
-		{"a config at a mounted path", func(p *types.Project) {
+		{"a config at a mounted path", "volumes", func(p *types.Project) {
 			p.Configs = types.Configs{"settings": {File: projectDir + "/settings"}}
 		}, func(s *types.ServiceConfig) {
 			s.Configs = []types.ServiceConfigObjConfig{{Source: "settings", Target: "/app/config"}}
+		}},
+		{"a secret the project does not declare", "secrets", func(*types.Project) {}, func(s *types.ServiceConfig) {
+			s.Secrets = []types.ServiceSecretConfig{{Source: "not-declared"}}
 		}},
 	}
 	for _, tc := range cases {
@@ -475,8 +506,12 @@ func TestDeniesContainerPathDeclaredTwice(t *testing.T) {
 			tc.service(&service)
 
 			err := compareService(project, service, req, modeCreate)
-			if pe, ok := Inspect(err); !ok || pe.Field != "volumes" {
-				t.Fatalf("one container path declared twice must be refused, got %v", err)
+			pe, ok := Inspect(err)
+			if !ok || pe.Field != tc.field {
+				t.Fatalf("a mount compose cannot resolve must be refused on %s, got %v", tc.field, err)
+			}
+			if pe.Service != "app" {
+				t.Errorf("the refusal must name the service that declared the mount, got %q", pe.Service)
 			}
 		})
 	}
@@ -540,78 +575,81 @@ func TestDeniesMountOptionsThatChangeHostAccess(t *testing.T) {
 	cases := []struct {
 		name   string
 		field  string
+		detail string
 		mutate func(*types.ServiceConfig, *container.CreateRequest)
 	}{
-		{"create_host_path turned off", "HostConfig.Mounts", func(_ *types.ServiceConfig, req *container.CreateRequest) {
+		{"create_host_path turned off", "HostConfig.Mounts", "", func(_ *types.ServiceConfig, req *container.CreateRequest) {
 			// The Mount API form carries the flag. The bind string form always
 			// creates the path, so only the explicit form can turn it off.
 			i := swapBindToMount(req)
 			req.HostConfig.Mounts[i].BindOptions.CreateMountpoint = false
 		}},
-		{"create_host_path turned on", "HostConfig.Mounts", func(s *types.ServiceConfig, req *container.CreateRequest) {
+		{"create_host_path turned on", "HostConfig.Mounts", "", func(s *types.ServiceConfig, req *container.CreateRequest) {
 			s.Volumes[0].Bind.CreateHostPath = false
 			i := swapBindToMount(req)
 			req.HostConfig.Mounts[i].BindOptions.CreateMountpoint = true
 		}},
-		{"volume subpath changed", "HostConfig.Mounts", func(s *types.ServiceConfig, req *container.CreateRequest) {
+		{"volume subpath changed", "HostConfig.Mounts", "", func(s *types.ServiceConfig, req *container.CreateRequest) {
 			s.Volumes[1].Volume = &types.ServiceVolumeVolume{Subpath: "restricted"}
 			i := swapVolumeToMount(req)
 			req.HostConfig.Mounts[i].VolumeOptions.Subpath = "other"
 		}},
-		{"volume subpath dropped", "HostConfig.Mounts", func(s *types.ServiceConfig, req *container.CreateRequest) {
+		{"volume subpath dropped", "HostConfig.Mounts", "", func(s *types.ServiceConfig, req *container.CreateRequest) {
 			// Declaring a subpath is a constraint, dropping it widens what the
 			// container can read.
 			s.Volumes[1].Volume = &types.ServiceVolumeVolume{Subpath: "restricted"}
 			i := swapVolumeToMount(req)
 			req.HostConfig.Mounts[i].VolumeOptions.Subpath = ""
 		}},
-		{"nocopy turned on", "HostConfig.Mounts", func(_ *types.ServiceConfig, req *container.CreateRequest) {
+		{"nocopy turned on", "HostConfig.Mounts", "", func(_ *types.ServiceConfig, req *container.CreateRequest) {
 			i := swapVolumeToMount(req)
 			req.HostConfig.Mounts[i].VolumeOptions.NoCopy = true
 		}},
-		{"nocopy turned off", "HostConfig.Mounts", func(s *types.ServiceConfig, req *container.CreateRequest) {
+		{"nocopy turned off", "HostConfig.Mounts", "", func(s *types.ServiceConfig, req *container.CreateRequest) {
 			s.Volumes[1].Volume = &types.ServiceVolumeVolume{NoCopy: true}
 			i := swapVolumeToMount(req)
 			req.HostConfig.Mounts[i].VolumeOptions.NoCopy = false
 		}},
-		{"SELinux relabelling added", "HostConfig.Binds", func(_ *types.ServiceConfig, req *container.CreateRequest) {
+		{"SELinux relabelling added", "HostConfig.Binds", "", func(_ *types.ServiceConfig, req *container.CreateRequest) {
 			req.HostConfig.Binds[0] = projectDir + "/config:/app/config:ro,z"
 		}},
-		{"SELinux relabelling changed", "HostConfig.Binds", func(s *types.ServiceConfig, req *container.CreateRequest) {
+		{"SELinux relabelling changed", "HostConfig.Binds", "", func(s *types.ServiceConfig, req *container.CreateRequest) {
 			s.Volumes[0].Bind.SELinux = "z"
 			req.HostConfig.Binds[0] = projectDir + "/config:/app/config:ro,Z"
 		}},
-		{"non-recursive binding turned on", "HostConfig.Mounts", func(_ *types.ServiceConfig, req *container.CreateRequest) {
+		{"non-recursive binding turned on", "HostConfig.Mounts", "", func(_ *types.ServiceConfig, req *container.CreateRequest) {
 			i := swapBindToMount(req)
 			req.HostConfig.Mounts[i].BindOptions.NonRecursive = true
 		}},
-		{"writable non-recursive binding turned on", "HostConfig.Mounts", func(_ *types.ServiceConfig, req *container.CreateRequest) {
-			i := swapBindToMount(req)
-			req.HostConfig.Mounts[i].BindOptions.ReadOnlyNonRecursive = true
-		}},
-		{"forced read-only recursion turned off", "HostConfig.Mounts", func(s *types.ServiceConfig, req *container.CreateRequest) {
+		{"writable non-recursive binding turned on", "HostConfig.Mounts",
+			`container path "/app/config": ReadOnlyNonRecursive differs (compose: false, found: true)`,
+			func(_ *types.ServiceConfig, req *container.CreateRequest) {
+				i := swapBindToMount(req)
+				req.HostConfig.Mounts[i].BindOptions.ReadOnlyNonRecursive = true
+			}},
+		{"forced read-only recursion turned off", "HostConfig.Mounts", "", func(s *types.ServiceConfig, req *container.CreateRequest) {
 			s.Volumes[0].Bind.Recursive = "readonly"
 			i := swapBindToMount(req)
 			req.HostConfig.Mounts[i].BindOptions.ReadOnlyForceRecursive = false
 		}},
-		{"per-mount volume driver added", "HostConfig.Mounts", func(_ *types.ServiceConfig, req *container.CreateRequest) {
+		{"per-mount volume driver added", "HostConfig.Mounts", "", func(_ *types.ServiceConfig, req *container.CreateRequest) {
 			i := swapVolumeToMount(req)
 			req.HostConfig.Mounts[i].VolumeOptions.DriverConfig = &mount.Driver{Name: "nfs"}
 		}},
-		{"per-mount volume driver options added", "HostConfig.Mounts", func(_ *types.ServiceConfig, req *container.CreateRequest) {
+		{"per-mount volume driver options added", "HostConfig.Mounts", "", func(_ *types.ServiceConfig, req *container.CreateRequest) {
 			i := swapVolumeToMount(req)
 			req.HostConfig.Mounts[i].VolumeOptions.DriverConfig = &mount.Driver{
 				Name: "local", Options: map[string]string{"type": "nfs"},
 			}
 		}},
-		{"volume labels added", "HostConfig.Mounts", func(_ *types.ServiceConfig, req *container.CreateRequest) {
+		{"volume labels added", "HostConfig.Mounts", "", func(_ *types.ServiceConfig, req *container.CreateRequest) {
 			i := swapVolumeToMount(req)
 			req.HostConfig.Mounts[i].VolumeOptions.Labels = map[string]string{"attacker": "controlled"}
 		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mustDeny(t, tc.name, tc.field, tc.mutate)
+			mustDenyDetail(t, tc.name, tc.field, tc.detail, tc.mutate)
 		})
 	}
 }
@@ -901,13 +939,71 @@ func TestMatchCreateTriesEveryService(t *testing.T) {
 	}
 }
 
-func TestMatchCreateDeniesWhenNoServiceMatches(t *testing.T) {
-	project, service, req := fixture()
-	project.Services = types.Services{"app": service}
-	req.Config.Image = "evil:latest"
+func TestUnmatchedCreateNamesAComparableService(t *testing.T) {
+	_, app, _ := fixture()
+	other := types.ServiceConfig{Name: "other", Image: "busybox", User: "1000:1000"}
+	mirror := types.ServiceConfig{Name: "mirror", Image: "alpine:3.20", User: "2000:2000"}
 
-	if _, err := (&Policy{project: project}).matchCreate(req); err == nil {
-		t.Fatal("expected the request to be denied")
+	cases := []struct {
+		name     string
+		services types.Services
+		prepare  func(*container.CreateRequest)
+		want     string
+	}{
+		{
+			name:     "an image no service declares",
+			services: types.Services{"other": other, "app": app},
+			prepare:  func(r *container.CreateRequest) { r.Config.Labels, r.Config.Image = nil, "evil:latest" },
+			want:     `no Compose service matches image "evil:latest"`,
+		},
+		{
+			name:     "the service the label names",
+			services: types.Services{"other": other, "app": app},
+			prepare: func(r *container.CreateRequest) {
+				r.Config.Labels, r.Config.User = map[string]string{LabelService: "app"}, "root"
+			},
+			want: `service "app": Config.User: compose declares "1000:1000", found "root"`,
+		},
+		{
+			name:     "the only service using the image",
+			services: types.Services{"other": other, "app": app},
+			prepare:  func(r *container.CreateRequest) { r.Config.Labels, r.Config.User = nil, "root" },
+			want:     `service "app": Config.User: compose declares "1000:1000", found "root"`,
+		},
+		{
+			name:     "several services using the image",
+			services: types.Services{"app": app, "mirror": mirror},
+			prepare:  func(r *container.CreateRequest) { r.Config.Labels, r.Config.User = nil, "root" },
+			want:     "no Compose service matches this request",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			project, _, req := fixture()
+			project.Services = tc.services
+			tc.prepare(req)
+
+			_, err := (&Policy{project: project}).matchCreate(req)
+			if err == nil {
+				t.Fatal("a request matching no service was accepted")
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("error = %q, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestMalformedBindNamesTheFieldOnce(t *testing.T) {
+	project, service, req := fixture()
+	req.HostConfig.Binds = append(req.HostConfig.Binds, "no-container-path")
+
+	err := compareService(project, service, req, modeCreate)
+	if err == nil {
+		t.Fatal("a bind entry without a container path was accepted")
+	}
+	if got := strings.Count(err.Error(), "HostConfig.Binds"); got != 1 {
+		t.Fatalf("the field is named %d times in %q", got, err)
 	}
 }
 

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"maps"
+	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/docker/api/types/volume"
@@ -46,7 +47,7 @@ func matchVolumeCreate(project *types.Project, req volume.CreateOptions) (string
 	}
 	if !maps.Equal(map[string]string(cfg.DriverOpts), req.DriverOpts) {
 		return "", denyf("", "DriverOpts",
-			"compose declares driver_opts %v for volume %q, request asks for %v", cfg.DriverOpts, req.Name, req.DriverOpts)
+			"driver options for volume %q differ from compose", req.Name)
 	}
 	if req.ClusterVolumeSpec != nil {
 		return "", denyf("", "ClusterVolumeSpec", "compose never creates a cluster volume")
@@ -55,9 +56,9 @@ func matchVolumeCreate(project *types.Project, req volume.CreateOptions) (string
 	wantLabels := copyLabels(cfg.Labels)
 	wantLabels[LabelProject] = project.Name
 	wantLabels[LabelVolume] = key
-	if !hasLabel(wantLabels, req.Labels) {
+	if mismatched := mismatchedLabels(wantLabels, req.Labels); len(mismatched) != 0 {
 		return "", denyf("", "Labels",
-			"volume %q is missing the compose project management label %s=%s", req.Name, LabelProject, project.Name)
+			"volume %q has missing or mismatched compose labels: %s", req.Name, strings.Join(mismatched, ", "))
 	}
 	return key, nil
 }

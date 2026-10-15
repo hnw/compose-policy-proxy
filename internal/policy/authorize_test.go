@@ -173,11 +173,20 @@ func TestRefusedRequests(t *testing.T) {
 		detail string
 	}{
 		{
-			name: "a security-sensitive field the compose file does not declare", method: "POST",
+			name: "an image no service declares", method: "POST",
 			path: "/v1.51/containers/create",
 			body: `{"Image":"alpine:latest","HostConfig":{"NetworkMode":"demo_frontend"},
 				"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`,
-			field: "Config.Image",
+			detail: `no Compose service matches image "alpine:latest"`,
+		},
+		{
+			name: "a field the compose file does not declare", method: "POST",
+			path: "/v1.51/containers/create",
+			body: `{"Image":"alpine:latest","Labels":{"com.docker.compose.service":"app"},
+				"HostConfig":{"NetworkMode":"demo_frontend"},
+				"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`,
+			field:  "Config.Image",
+			detail: `compose declares "alpine:3.20", found "alpine:latest"`,
 		},
 		{
 			name: "a create request that carries no config", method: "POST",
@@ -199,12 +208,17 @@ func TestRefusedRequests(t *testing.T) {
 		},
 		{
 			name: "a pull of every image", method: "POST", path: "/v1.51/images/create?fromImage=alpine:3.20&all=1",
-			field: "fromImage",
+			field: "all",
+		},
+		{
+			name: "a pull parameter that is not a boolean", method: "POST",
+			path:  "/v1.51/images/create?fromImage=alpine:3.20&all=sometimes",
+			field: "all",
 		},
 		{
 			name: "a pull of an image out of another container", method: "POST",
 			path:  "/v1.51/images/create?fromImage=alpine:3.20&fromSrc=someone_elses",
-			field: "fromImage",
+			field: "fromSrc",
 		},
 		{
 			name: "a network the project does not declare", method: "GET", path: "/v1.51/networks/someone_elses",
