@@ -225,7 +225,7 @@ func TestNoNewPrivilegesBareFormMeansOn(t *testing.T) {
 			req.HostConfig.SecurityOpt = []string{"no-new-privileges:true"}
 		})
 	mustAllow(t, "no-new-privileges:true against a bare no-new-privileges",
-		func(s *types.ServiceConfig, req *container.CreateRequest) {
+		func(_ *types.ServiceConfig, req *container.CreateRequest) {
 			req.HostConfig.SecurityOpt = []string{"no-new-privileges"}
 		})
 	mustDeny(t, "no-new-privileges turned off behind a bare declaration", "HostConfig.SecurityOpt",

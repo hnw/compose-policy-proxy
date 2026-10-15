@@ -1,37 +1,30 @@
-# Linter configuration.
-#
-# The defaults are kept, with three deliberate exclusions.
 version: "2"
 
 linters:
   default: standard
   enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
+    - gosec
+    - revive
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: unused-parameter
 
   exclusions:
     rules:
-      # QF1008 asks for the embedded field to be dropped from a selector, turning
-      # `req.Config.Image` into `req.Image`. The explicit form is kept: a container
-      # create request embeds both a portable Config and a HostConfig, and naming
-      # the struct is what makes it obvious which half of the request a field is
-      # on. It is also the form the specification uses.
-      - text: "QF1008"
-        linters: [staticcheck]
-      # QF1001 rewrites readable boolean expressions into their negated form.
-      - text: "QF1001"
-        linters: [staticcheck]
-      # SA1019 fires on container.Config.MacAddress and ContainerIDFile. The
-      # proxy checks both precisely because Compose expresses a MAC address on
-      # the network endpoint instead, and does not express a container id file at
-      # all, so a value in either is a Docker-only field that must be refused.
-      # The decisions are annotated at the call sites.
-      - text: "SA1019.*(MacAddress|ContainerIDFile)"
-        linters: [staticcheck]
+      - linters: [staticcheck]
+        text: "QF1001|QF1008"
+
+      - path: _test\.go
+        linters: [gosec]
 
 formatters:
   enable:
-    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/hnw/compose-policy-proxy

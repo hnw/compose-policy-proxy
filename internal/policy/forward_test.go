@@ -162,7 +162,9 @@ func TestForwardsNetworkBehaviour(t *testing.T) {
 			r.NetworkingConfig.EndpointsConfig["demo_frontend"].IPAMConfig =
 				&network.EndpointIPAMConfig{LinkLocalIPs: []string{"169.254.1.1"}}
 		}},
-		{"container-wide mac", func(r *container.CreateRequest) { r.Config.MacAddress = "02:42:ac:1e:00:0a" }},
+		{"container-wide mac", func(r *container.CreateRequest) {
+			r.Config.MacAddress = "02:42:ac:1e:00:0a" //nolint:staticcheck // the deprecated field is the subject of the test
+		}},
 		{"shell", func(r *container.CreateRequest) { r.Config.Shell = []string{"/bin/bash"} }},
 		{"links", func(r *container.CreateRequest) {
 			// A link is a name, not a route. The daemon ignores it on a
@@ -229,7 +231,7 @@ func TestForwardsCompareEquivalentValues(t *testing.T) {
 	mustAllow(t, "an extra capability drop", func(_ *types.ServiceConfig, req *container.CreateRequest) {
 		req.HostConfig.CapDrop = []string{"CAP_MKNOD", "CAP_CHOWN"}
 	})
-	mustAllow(t, "a relative bind source resolved the same way", func(s *types.ServiceConfig, req *container.CreateRequest) {
+	mustAllow(t, "a relative bind source resolved the same way", func(s *types.ServiceConfig, _ *container.CreateRequest) {
 		s.Volumes[0].Source = "./config"
 	})
 }

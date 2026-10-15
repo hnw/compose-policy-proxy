@@ -313,7 +313,7 @@ func TestOwnershipStillRequiresDeclaredSecurityOption(t *testing.T) {
 // deprecated container-wide MAC field on inspect.
 func TestOwnershipToleratesDaemonMACField(t *testing.T) {
 	project, _, insp := inspectFixture()
-	insp.Config.MacAddress = "02:42:ac:1e:00:0a"
+	insp.Config.MacAddress = "02:42:ac:1e:00:0a" //nolint:staticcheck // the deprecated field is the subject of the test
 	if _, err := inspect(t, inspectPolicy(&project, insp)); err != nil {
 		t.Fatalf("the daemon's container-wide MAC field should be tolerated, got %v", err)
 	}

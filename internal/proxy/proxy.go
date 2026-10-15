@@ -43,9 +43,15 @@ func New(cfg Config) *Proxy {
 	return &Proxy{
 		policy: cfg.Policy,
 		logger: logger,
-		upstream: &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return dial(ctx)
-		}}},
+		// A redirect would be sent as a fresh request, which the policy never authorized.
+		upstream: &http.Client{
+			Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return dial(ctx)
+			}},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		dialer: dial,
 	}
 }
@@ -118,7 +124,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, body []byte, que
 		out.Header.Set("Accept-Encoding", "identity")
 	}
 
-	resp, err := p.upstream.Do(out)
+	resp, err := p.upstream.Do(out) //nolint:gosec // G704: upstream always uses the configured Unix socket
 	if err != nil {
 		p.writeError(w, http.StatusBadGateway, "upstream docker daemon is unreachable")
 		return

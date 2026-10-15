@@ -62,7 +62,7 @@ func inUse(path string) bool {
 }
 
 func ensureDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: other UIDs need directory traversal; socket permissions restrict access
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	return nil
