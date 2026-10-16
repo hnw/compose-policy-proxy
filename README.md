@@ -76,10 +76,9 @@ See the [example README](examples/quickstart/README.md) for denied-request examp
 
 ## Supported operations
 
-The proxy currently supports the Docker API operations needed for:
+The proxy currently supports the Docker API operations needed for `docker compose run`.
 
-- `docker compose run`
-- [compose-exec](https://github.com/hnw/compose-exec)
+Regular Compose services cannot be created, started, or stopped through the restricted socket. Start any required services separately before using `docker compose run`.
 
 Other Compose workflows, including `up`, `down`, `exec`, `logs`, `build`, and `push`, are not supported through the restricted socket.
 

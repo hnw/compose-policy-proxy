@@ -326,7 +326,8 @@ func TestDeniesNetworkIsolationEscapes(t *testing.T) {
 			name: "host networking",
 			body: func(string) []byte {
 				return []byte(`{"Image":"` + testImage + `","Cmd":["true"],"Labels":` +
-					`{"com.docker.compose.project":"` + p.name + `","com.docker.compose.service":"app"},` +
+					`{"com.docker.compose.project":"` + p.name + `","com.docker.compose.service":"app",` +
+					`"com.docker.compose.oneoff":"True"},` +
 					`"HostConfig":{"NetworkMode":"host"}}`)
 			},
 			want: "HostConfig.NetworkMode",
@@ -335,7 +336,8 @@ func TestDeniesNetworkIsolationEscapes(t *testing.T) {
 			name: "another container's namespace",
 			body: func(string) []byte {
 				return []byte(`{"Image":"` + testImage + `","Cmd":["true"],"Labels":` +
-					`{"com.docker.compose.project":"` + p.name + `","com.docker.compose.service":"app"},` +
+					`{"com.docker.compose.project":"` + p.name + `","com.docker.compose.service":"app",` +
+					`"com.docker.compose.oneoff":"True"},` +
 					`"HostConfig":{"NetworkMode":"container:a-victim"}}`)
 			},
 			want: "HostConfig.NetworkMode",
@@ -352,7 +354,8 @@ func TestDeniesNetworkIsolationEscapes(t *testing.T) {
 			name: "an undeclared network",
 			body: func(networkName string) []byte {
 				return []byte(`{"Image":"` + testImage + `","Cmd":["true"],"Labels":` +
-					`{"com.docker.compose.project":"` + p.name + `","com.docker.compose.service":"app"},` +
+					`{"com.docker.compose.project":"` + p.name + `","com.docker.compose.service":"app",` +
+					`"com.docker.compose.oneoff":"True"},` +
 					`"HostConfig":{"NetworkMode":"` + networkName + `"},` +
 					`"NetworkingConfig":{"EndpointsConfig":{"` + networkName + `":{},"someone_elses":{}}}}`)
 			},
@@ -384,7 +387,9 @@ func TestDeniesHostConfigBinds(t *testing.T) {
 	// The request mirrors what Docker Compose sends for this project, with a
 	// single extra bind entry, so that the denial can only be about that entry.
 	network := p.loadProject(t).Name + "_default"
-	body := `{"Image":"` + testImage + `","Cmd":["true"],"WorkingDir":"/app",` +
+	body := `{"Image":"` + testImage + `","Cmd":["true"],"WorkingDir":"/app","Labels":` +
+		`{"com.docker.compose.project":"` + p.name + `","com.docker.compose.service":"app",` +
+		`"com.docker.compose.oneoff":"True"},` +
 		`"HostConfig":{"NetworkMode":"` + network + `","Binds":["/:/host:rw"]},` +
 		`"NetworkingConfig":{"EndpointsConfig":{"` + network + `":{"Aliases":null}}}}`
 	resp := doRequest(t, h.socket, "POST", "/containers/create", body)
@@ -767,6 +772,7 @@ func buildCreateRequest(
 		"Labels": map[string]string{
 			policy.LabelProject: p.name,
 			policy.LabelService: "app",
+			policy.LabelOneoff:  "True",
 		},
 		"HostConfig":       merged,
 		"NetworkingConfig": map[string]any{"EndpointsConfig": endpoints},

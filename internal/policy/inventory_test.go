@@ -140,7 +140,7 @@ var configFields = map[string]fieldDecision{
 	// class D: what `docker compose run` exists to change, plus the rest
 	"Cmd":          forwarded("the command override is the point of docker compose run"),
 	"Env":          forwarded("environment"),
-	"Labels":       forwarded("read only as a hint for which service to try first; never an authority"),
+	"Labels":       forwarded("read only to name the service to compare against and to require a one-off container; never an authority"),
 	"Hostname":     forwarded("container-local identity"),
 	"Domainname":   forwarded("container-local identity"),
 	"WorkingDir":   forwarded("container-local layout"),

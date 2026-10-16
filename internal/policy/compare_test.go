@@ -917,81 +917,90 @@ func TestPortBindingsMustMatchExactly(t *testing.T) {
 	}
 }
 
-func TestMatchCreateTriesEveryService(t *testing.T) {
-	project, service, req := fixture()
-
-	// The request's own Compose labels name no service, so a match can only come
-	// from comparing every service in the project.
-	project.Services = types.Services{
-		"other": {Name: "other", Image: "busybox", User: "1000:1000"},
-		"app":   service,
-	}
-	req.Config.Labels = map[string]string{
+func oneOffLabels(service string) map[string]string {
+	return map[string]string{
 		LabelProject: projectName,
-		LabelService: "does-not-exist",
-	}
-	matched, err := (&Policy{project: project}).matchCreate(req)
-	if err != nil {
-		t.Fatalf("expected a match, got %v", err)
-	}
-	if matched != "app" {
-		t.Fatalf("expected the request to match service %q, got %q", "app", matched)
+		LabelService: service,
+		LabelOneoff:  oneoffLabelValue,
 	}
 }
 
-func TestUnmatchedCreateNamesAComparableService(t *testing.T) {
-	_, app, _ := fixture()
-	other := types.ServiceConfig{Name: "other", Image: "busybox", User: "1000:1000"}
-	mirror := types.ServiceConfig{Name: "mirror", Image: "alpine:3.20", User: "2000:2000"}
-
+func TestCreateRequiresTheLabelsOfAOneOffRun(t *testing.T) {
 	cases := []struct {
-		name     string
-		services types.Services
-		prepare  func(*container.CreateRequest)
-		want     string
+		name    string
+		prepare func(map[string]string)
+		want    string // the label the refusal has to name
 	}{
-		{
-			name:     "an image no service declares",
-			services: types.Services{"other": other, "app": app},
-			prepare:  func(r *container.CreateRequest) { r.Config.Labels, r.Config.Image = nil, "evil:latest" },
-			want:     `no Compose service matches image "evil:latest"`,
-		},
-		{
-			name:     "the service the label names",
-			services: types.Services{"other": other, "app": app},
-			prepare: func(r *container.CreateRequest) {
-				r.Config.Labels, r.Config.User = map[string]string{LabelService: "app"}, "root"
-			},
-			want: `service "app": Config.User: compose declares "1000:1000", found "root"`,
-		},
-		{
-			name:     "the only service using the image",
-			services: types.Services{"other": other, "app": app},
-			prepare:  func(r *container.CreateRequest) { r.Config.Labels, r.Config.User = nil, "root" },
-			want:     `service "app": Config.User: compose declares "1000:1000", found "root"`,
-		},
-		{
-			name:     "several services using the image",
-			services: types.Services{"app": app, "mirror": mirror},
-			prepare:  func(r *container.CreateRequest) { r.Config.Labels, r.Config.User = nil, "root" },
-			want:     "no Compose service matches this request",
-		},
+		{"no project label", func(l map[string]string) { delete(l, LabelProject) }, LabelProject},
+		{"another project's label", func(l map[string]string) { l[LabelProject] = "other" }, LabelProject},
+		{"no service label", func(l map[string]string) { delete(l, LabelService) }, LabelService},
+		{"a service the project does not declare", func(l map[string]string) { l[LabelService] = "nope" }, LabelService},
+		{"no oneoff label", func(l map[string]string) { delete(l, LabelOneoff) }, LabelOneoff},
+		{"a oneoff label set to false", func(l map[string]string) { l[LabelOneoff] = "False" }, LabelOneoff},
+		{"a oneoff label in another spelling", func(l map[string]string) { l[LabelOneoff] = "true" }, LabelOneoff},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			project, _, req := fixture()
-			project.Services = tc.services
-			tc.prepare(req)
+			project, service, req := fixture()
+			project.Services = types.Services{service.Name: service}
+			req.Config.Labels = oneOffLabels(service.Name)
+			tc.prepare(req.Config.Labels)
 
 			_, err := (&Policy{project: project}).matchCreate(req)
-			if err == nil {
-				t.Fatal("a request matching no service was accepted")
+			pe, ok := Inspect(err)
+			if !ok {
+				t.Fatalf("the create request was accepted, got %v", err)
 			}
-			if err.Error() != tc.want {
-				t.Fatalf("error = %q, want %q", err, tc.want)
+			if pe.Field != tc.want {
+				t.Fatalf("field = %q, want %q (%s)", pe.Field, tc.want, pe.Detail)
 			}
 		})
 	}
+}
+
+func TestCreateMatchesOnlyTheServiceItsLabelsName(t *testing.T) {
+	oneService := func(t *testing.T) (*types.Project, types.ServiceConfig, *container.CreateRequest) {
+		t.Helper()
+		project, service, req := fixture()
+		project.Services = types.Services{service.Name: service}
+		req.Config.Labels = oneOffLabels(service.Name)
+		return project, service, req
+	}
+
+	t.Run("the service the labels name", func(t *testing.T) {
+		project, service, req := oneService(t)
+
+		matched, err := (&Policy{project: project}).matchCreate(req)
+		if err != nil {
+			t.Fatalf("a faithful one-off request was refused, got %v", err)
+		}
+		if matched != service.Name {
+			t.Fatalf("matched %q, want %q", matched, service.Name)
+		}
+	})
+
+	t.Run("a request configured like another service", func(t *testing.T) {
+		project, app, req := oneService(t)
+		mirror := app
+		mirror.Name = "mirror"
+		mirror.User = "2000:2000"
+		project.Services["mirror"] = mirror
+		req.Config.User = mirror.User
+
+		// The request does match the other service, so only the label decides
+		// which one it is judged against.
+		if err := compareService(project, mirror, req, modeCreate); err != nil {
+			t.Fatalf("the request should still match %q, got %v", mirror.Name, err)
+		}
+		_, err := (&Policy{project: project}).matchCreate(req)
+		pe, ok := Inspect(err)
+		if !ok {
+			t.Fatal("a request configured like another service was accepted")
+		}
+		if pe.Field != "Config.User" {
+			t.Fatalf("field = %q, want Config.User (%s)", pe.Field, pe.Detail)
+		}
+	})
 }
 
 func TestMalformedBindNamesTheFieldOnce(t *testing.T) {

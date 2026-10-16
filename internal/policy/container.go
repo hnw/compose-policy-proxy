@@ -13,71 +13,52 @@ import (
 const (
 	LabelProject = "com.docker.compose.project"
 	LabelService = "com.docker.compose.service"
+	LabelOneoff  = "com.docker.compose.oneoff"
 	LabelNetwork = "com.docker.compose.network"
 	LabelVolume  = "com.docker.compose.volume"
 )
 
+// oneoffLabelValue is what Compose writes for a one-off container.
+const oneoffLabelValue = "True"
+
 // matchCreate reports which service a create request matches. The Compose labels
-// in the request only order the candidates, so every service is tried.
+// name that service, so they are required rather than a hint.
 func (p *Policy) matchCreate(req *container.CreateRequest) (string, error) {
 	if req.Config == nil {
 		return "", deny("", "request", "container config is empty")
 	}
 	project := p.project
-	hint := req.Labels[LabelService]
-	candidates := candidateServices(project, hint)
-	if len(candidates) == 0 {
-		return "", deny("", "service", "project "+project.Name+" declares no service")
+	if got := req.Labels[LabelProject]; got != project.Name {
+		return "", denyf("", LabelProject,
+			"request claims project %q, this proxy serves project %q", got, project.Name)
 	}
-
-	// A refusal names the service the request pointed at, or the only one using
-	// its image, since a field of an unrelated service would mislead.
-	var hintErr, imageErr error
-	imageUses := 0
-	for _, service := range candidates {
-		err := compareService(project, service, req, modeCreate)
-		if err == nil {
-			if err := p.protected.checkCreate(service.Name); err != nil {
-				return "", err
-			}
-			return service.Name, nil
-		}
-		if service.Name == hint {
-			hintErr = err
-		}
-		if compose.ImageName(project, service) == req.Config.Image {
-			imageUses++
-			imageErr = err
-		}
+	if err := checkOneOff(req.Labels); err != nil {
+		return "", err
 	}
-	switch {
-	case hintErr != nil:
-		return "", hintErr
-	case imageUses == 1:
-		return "", imageErr
-	case imageUses == 0:
-		return "", denyf("", "", "no Compose service matches image %q", req.Config.Image)
+	serviceName := req.Labels[LabelService]
+	service, err := compose.Service(project, serviceName)
+	if err != nil {
+		return "", denyf("", LabelService,
+			"request names service %q, which project %q does not declare", serviceName, project.Name)
 	}
-	return "", deny("", "", "no Compose service matches this request")
+	if err := compareService(project, service, req, modeCreate); err != nil {
+		return "", err
+	}
+	if err := p.protected.checkCreate(service.Name); err != nil {
+		return "", err
+	}
+	return service.Name, nil
 }
 
-// candidateServices orders services so the one named by the request label is
-// tried first.
-func candidateServices(project *types.Project, hint string) []types.ServiceConfig {
-	all := compose.Services(project)
-	out := make([]types.ServiceConfig, 0, len(all))
-	if hint != "" {
-		if s, err := compose.Service(project, hint); err == nil {
-			out = append(out, s)
-		}
+// checkOneOff requires the label Compose sets for a one-off container. A client
+// chooses its own labels, so the label narrows what this proxy serves rather
+// than proving where the request came from.
+func checkOneOff(labels map[string]string) error {
+	if got := labels[LabelOneoff]; got != oneoffLabelValue {
+		return denyf("", LabelOneoff,
+			"only one-off containers are allowed (expected %q, found %q)", oneoffLabelValue, got)
 	}
-	for _, s := range all {
-		if s.Name == hint {
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
+	return nil
 }
 
 // matchExistingContainer requires the project label and matching security state, since

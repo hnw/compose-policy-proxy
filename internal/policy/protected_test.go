@@ -41,6 +41,7 @@ func socketService(
 	req.Config.Labels = map[string]string{
 		LabelProject: projectName,
 		LabelService: name,
+		LabelOneoff:  oneoffLabelValue,
 	}
 	req.HostConfig.Binds = []string{source + ":" + hostSocket}
 	req.HostConfig.Tmpfs = nil
@@ -75,6 +76,7 @@ func protectedFixture() (*Policy, map[string]*container.CreateRequest, stubInspe
 	req.Config.Labels = map[string]string{
 		LabelProject: projectName,
 		LabelService: service.Name,
+		LabelOneoff:  oneoffLabelValue,
 	}
 	project.Services[service.Name] = service
 	requests[service.Name] = req
@@ -137,12 +139,12 @@ func TestProtectedServiceCannotBeCreated(t *testing.T) {
 	}
 }
 
-func TestOrdinaryServiceCanStillBeCreated(t *testing.T) {
+func TestUnprotectedOneOffCanBeCreated(t *testing.T) {
 	p, requests, _ := protectedFixture()
 
 	decision, err := create(t, p, requests["app"])
 	if err != nil {
-		t.Fatalf("an ordinary service must remain launchable, got %v", err)
+		t.Fatalf("a one-off container of an unprotected service must remain launchable, got %v", err)
 	}
 	if decision.Service != "app" {
 		t.Fatalf("matched %q, want app", decision.Service)
@@ -163,41 +165,9 @@ func TestServiceUsingTheRestrictedSocketCanBeCreated(t *testing.T) {
 	}
 }
 
-func TestProtectedServiceIsRefusedWhateverLabelTheRequestClaims(t *testing.T) {
-	p, requests, _ := protectedFixture()
-
-	// The label only orders the candidates, so claiming another service cannot
-	// make a protected request match it.
-	for _, claim := range []string{"app", "runner", "does-not-exist"} {
-		req := requests["proxy"]
-		req.Config.Labels[LabelService] = claim
-		_, err := create(t, p, req)
-		pe, ok := Inspect(err)
-		if !ok || pe.Service != "proxy" {
-			t.Errorf("a protected request claiming %q was not refused as the proxy: %v", claim, err)
-		}
-	}
-}
-
-func TestOrdinaryRequestIsNotRefusedForAnotherServicesLabel(t *testing.T) {
-	// Protection narrows what a matching service may do. A client labelling an
-	// ordinary request as the proxy must not turn it into a refusal.
-	p, requests, _ := protectedFixture()
-
-	req := requests["app"]
-	req.Config.Labels[LabelService] = "proxy"
-	decision, err := create(t, p, req)
-	if err != nil {
-		t.Fatalf("an ordinary request mislabelled as the proxy must still be allowed, got %v", err)
-	}
-	if decision.Service != "app" {
-		t.Fatalf("matched %q, want app", decision.Service)
-	}
-}
-
 func TestProtectedServiceFieldMismatchIsStillReportedAsSuch(t *testing.T) {
-	// Filtering the protected services out of the candidate set would report this
-	// as "declares no service" and hide which field is wrong.
+	// The refusal names the field that differs, so that it says what is wrong
+	// rather than only which service was addressed.
 	p, requests, _ := protectedFixture()
 
 	req := requests["proxy"]
@@ -259,7 +229,7 @@ func TestProtectedContainerOperations(t *testing.T) {
 	}
 }
 
-func TestOrdinaryContainersKeepEveryOperation(t *testing.T) {
+func TestUnprotectedOneOffKeepsAllowedOperations(t *testing.T) {
 	p, _, _ := protectedFixture()
 
 	for _, op := range []struct{ method, suffix string }{
@@ -273,7 +243,7 @@ func TestOrdinaryContainersKeepEveryOperation(t *testing.T) {
 		t.Run(op.method+op.suffix, func(t *testing.T) {
 			decision, err := p.Authorize(t.Context(), request(t, op.method, "/v1.51/containers/app"+op.suffix))
 			if err != nil {
-				t.Fatalf("an ordinary container must keep %s %s, got %v", op.method, op.suffix, err)
+				t.Fatalf("a one-off container of an unprotected service must keep %s %s, got %v", op.method, op.suffix, err)
 			}
 			if decision.Service != "app" {
 				t.Fatalf("resolved service %q, want app", decision.Service)

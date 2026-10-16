@@ -75,6 +75,7 @@ func inspectOf(
 	insp.Config.Labels = map[string]string{
 		LabelProject: project.Name,
 		LabelService: service.Name,
+		LabelOneoff:  oneoffLabelValue,
 	}
 
 	// Values the daemon substitutes when the create request left them out.
@@ -123,6 +124,63 @@ func request(t *testing.T, method, path string) *Request {
 func inspect(t *testing.T, p *Policy) (Decision, error) {
 	t.Helper()
 	return p.Authorize(t.Context(), request(t, "GET", "/v1.51/containers/"+containerID+"/json"))
+}
+
+func TestControlIsGrantedToOneOffContainersOnly(t *testing.T) {
+	cases := []struct {
+		name    string
+		method  string
+		path    string
+		prepare func(*container.InspectResponse, *types.Project)
+		want    bool // allowed
+	}{
+		{
+			name: "a one-off container", method: "POST", path: "/stop", want: true,
+		},
+		{
+			name: "an ordinary service container", method: "POST", path: "/stop",
+			prepare: func(i *container.InspectResponse, _ *types.Project) {
+				delete(i.Config.Labels, LabelOneoff)
+			},
+		},
+		{
+			name: "a container labelled oneoff false", method: "POST", path: "/stop",
+			prepare: func(i *container.InspectResponse, _ *types.Project) {
+				i.Config.Labels[LabelOneoff] = "False"
+			},
+		},
+		{
+			name: "reading an ordinary service container", method: "GET", path: "/json",
+			prepare: func(i *container.InspectResponse, _ *types.Project) {
+				delete(i.Config.Labels, LabelOneoff)
+			},
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			project, _, insp := inspectFixture()
+			if tc.prepare != nil {
+				tc.prepare(&insp, &project)
+			}
+			p := inspectPolicy(&project, insp)
+			_, err := p.Authorize(t.Context(), request(t, tc.method, "/v1.51/containers/"+containerID+tc.path))
+			if tc.want {
+				if err != nil {
+					t.Fatalf("%s %s must be allowed, got %v", tc.method, tc.path, err)
+				}
+				return
+			}
+			pe, ok := Inspect(err)
+			if !ok {
+				t.Fatalf("%s %s was allowed, or failed without a policy refusal: %v", tc.method, tc.path, err)
+			}
+			if pe.Field != LabelOneoff {
+				t.Fatalf("%s %s was refused on %q, want the one-off label (%s)",
+					tc.method, tc.path, pe.Field, pe.Detail)
+			}
+		})
+	}
 }
 
 func TestOwnershipAcceptsMatchingContainer(t *testing.T) {

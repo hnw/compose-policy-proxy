@@ -64,6 +64,7 @@ func appContainer() container.InspectResponse {
 			Labels: map[string]string{
 				policy.LabelProject: "demo",
 				policy.LabelService: "app",
+				policy.LabelOneoff:  "True",
 			},
 		},
 		NetworkSettings: &container.NetworkSettings{
@@ -110,7 +111,7 @@ func TestAuthorizedRequestsReachTheDecision(t *testing.T) {
 		{"version", "GET", "/v1.51/version", ""},
 		{"create", "POST", "/v1.51/containers/create", `{
 			"Image":"alpine:3.20",
-			"Labels":{"com.docker.compose.project":"demo","com.docker.compose.service":"app"},
+			"Labels":{"com.docker.compose.project":"demo","com.docker.compose.service":"app","com.docker.compose.oneoff":"True"},
 			"HostConfig":{"NetworkMode":"demo_frontend"},
 			"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`},
 		{"container inspect", "GET", "/v1.51/containers/abc/json", ""},
@@ -173,16 +174,27 @@ func TestRefusedRequests(t *testing.T) {
 		detail string
 	}{
 		{
-			name: "an image no service declares", method: "POST",
+			name: "a create request carrying no Compose labels", method: "POST",
 			path: "/v1.51/containers/create",
-			body: `{"Image":"alpine:latest","HostConfig":{"NetworkMode":"demo_frontend"},
+			body: `{"Image":"alpine:3.20","HostConfig":{"NetworkMode":"demo_frontend"},
 				"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`,
-			detail: `no Compose service matches image "alpine:latest"`,
+			field:  "com.docker.compose.project",
+			detail: `this proxy serves project "demo"`,
+		},
+		{
+			name: "a create request that is not a one-off", method: "POST",
+			path: "/v1.51/containers/create",
+			body: `{"Image":"alpine:3.20","Labels":{"com.docker.compose.project":"demo",` +
+				`"com.docker.compose.service":"app"},"HostConfig":{"NetworkMode":"demo_frontend"},
+				"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`,
+			field:  "com.docker.compose.oneoff",
+			detail: `only one-off containers are allowed (expected "True"`,
 		},
 		{
 			name: "a field the compose file does not declare", method: "POST",
 			path: "/v1.51/containers/create",
-			body: `{"Image":"alpine:latest","Labels":{"com.docker.compose.service":"app"},
+			body: `{"Image":"alpine:latest","Labels":{"com.docker.compose.project":"demo",` +
+				`"com.docker.compose.service":"app","com.docker.compose.oneoff":"True"},
 				"HostConfig":{"NetworkMode":"demo_frontend"},
 				"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`,
 			field:  "Config.Image",
@@ -342,7 +354,7 @@ func seccompCreateBody(t *testing.T, profile string) []byte {
 	body, err := json.Marshal(container.CreateRequest{
 		Config: &container.Config{
 			Image:  "alpine:3.20",
-			Labels: map[string]string{policy.LabelProject: "demo", policy.LabelService: "app"},
+			Labels: map[string]string{policy.LabelProject: "demo", policy.LabelService: "app", policy.LabelOneoff: "True"},
 		},
 		HostConfig: &container.HostConfig{
 			NetworkMode: "demo_frontend",

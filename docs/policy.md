@@ -1,244 +1,175 @@
 # Docker API policy
 
-This document describes how `compose-policy-proxy` turns the security model into Docker API decisions.
+This document describes the Docker API requests `compose-policy-proxy` permits and how they are checked against the resolved Compose project. See [security-model.md](security-model.md) for the threat model and limitations.
 
-The proxy compares Docker requests directly with the resolved Compose project. It does not first translate both sides into a large intermediate policy model. Canonicalization is applied only where Compose-aware clients and the Docker Engine use different representations for the same value.
+The policy is deny-by-default. An endpoint must be allowlisted, its method and API version must be supported, and its resource-specific authorization must succeed. Container, network, and volume create bodies are decoded strictly; unknown fields and trailing content are rejected.
 
-The machine-checked field inventory in `internal/policy/inventory_test.go` is the source of truth for whether a Docker request field is compared, refused, or forwarded. This document explains the main rules in human-readable form.
+The field inventory in `internal/policy/inventory_test.go` records whether each Docker request field is compared, refused, or forwarded. The rules below explain those decisions.
 
-## Comparison principles
+## Container authorization
 
-Exact comparison is the default for security-sensitive fields.
+### Creating containers
 
-Known safe-direction exceptions are used only where the ordering is simple and intentional. Capabilities are the main example: a request may add fewer capabilities and may drop more capabilities than Compose declares, but it may not restore a capability Compose dropped.
+`POST /containers/create` requires these labels in `Config.Labels`:
 
-Fields outside the current security boundary are forwarded without comparison.
+| Label | Required value |
+| --- | --- |
+| `com.docker.compose.project` | the configured Compose project name |
+| `com.docker.compose.service` | the name of a declared service |
+| `com.docker.compose.oneoff` | `True` |
 
-Known equivalent request encodings are accepted when they represent the same Compose operation. The policy does not require one particular Docker Compose version to serialize a value in one particular way.
+The proxy compares the request with the service named by the label. It does not search for another service whose settings happen to match. The request must pass the [configuration checks](#container-configuration) and must not target a protected service.
 
-## Compared security-sensitive fields
+Labels are client-supplied. They select the policy to apply; they do not prove that Docker Compose made the request. `docker compose run` supplies these labels, but another Docker API client can also supply them.
 
-The following groups are checked against the resolved Compose service.
+Normal service containers cannot be created through the restricted socket. A `docker compose run` invocation that needs a dependency created or started must have that dependency prepared outside the proxy.
 
-| Compose setting | Docker request | Policy concern |
+### Existing containers
+
+For an operation targeting an existing container, the proxy inspects it through the Engine and requires:
+
+- a project label matching the configured project;
+- a service label naming a declared service; and
+- security-sensitive settings matching that service to the extent recoverable from inspect data.
+
+The proxy does not trust labels supplied with the operation. It uses the labels and settings reported by the Engine. It keeps no container ownership database, so the same checks apply after a proxy restart.
+
+Read-only operations are available for matching service containers, including normal service containers. Control operations require `com.docker.compose.oneoff=True` in the inspect result and are denied for protected services. The [endpoint list](#docker-api-allowlist) identifies the operations in each group.
+
+The one-off label restricts which containers can be controlled, not how long they can run. A one-off container may run indefinitely or be started again.
+
+### Inspect-mode comparison
+
+The Engine fills or normalizes some create-time values. The proxy compares existing containers in inspect mode, which omits comparisons that cannot reliably reconstruct the original request:
+
+- an image-supplied entrypoint when Compose does not specify one; an explicit `entrypoint: []` remains checked;
+- an image-supplied user when Compose declares no non-empty `user`;
+- `Config.Volumes`, which can include image `VOLUME` declarations;
+- runtime, namespace, masked-path, and read-only-path settings normalized by the Engine; and
+- additional security options supplied by the Engine, while still requiring Compose-declared options.
+
+For a fixed `network_mode`, inspect may report an Engine-created endpoint with the mode's own name (for example, `none` or `host`). That endpoint is ignored; the network mode and any additional endpoints remain checked.
+
+Inspect authorization does not prove that every field of the original create request would still pass today's policy. Recreate containers after changing security-sensitive Compose settings.
+
+### Protected services
+
+A service whose resolved mounts give it direct access to the upstream Docker socket is protected, as defined in [security-model.md](security-model.md). Its containers cannot be created or controlled through the proxy, even when their configuration matches Compose. Read-only operations remain available.
+
+The service is identified before this restriction is applied. Naming a different service in a create request does not bypass it, because the request must match the named service's configuration.
+
+## Container configuration
+
+Security-sensitive settings are compared with the resolved service. Exact matching is the default, with the exceptions described below.
+
+| Compose setting | Docker request field | Restriction |
 | --- | --- | --- |
-| `image` | `Config.Image` | program executed with the service's privileges |
-| `entrypoint` | `Config.Entrypoint` | program selected by the Compose definition |
-| `user` | `Config.User` | container privilege |
-| `group_add` | `HostConfig.GroupAdd` | supplemental host groups |
-| `privileged` | `HostConfig.Privileged` | isolation boundary |
-| `cap_add`, `cap_drop` | `HostConfig.CapAdd`, `CapDrop` | Linux capability set |
-| `security_opt` | `HostConfig.SecurityOpt` | seccomp, AppArmor, SELinux, no-new-privileges |
-| `read_only` | `HostConfig.ReadonlyRootfs` | writable root filesystem |
-| `runtime` | `HostConfig.Runtime` | host-side runtime selection |
-| `sysctls` | `HostConfig.Sysctls` | kernel parameters |
-| namespace settings | `PidMode`, `IpcMode`, `CgroupnsMode`, `UsernsMode`, `UTSMode` | host or foreign namespace access |
-| mounts | `Mounts`, `Binds`, `Tmpfs` | host path, volume, or image access |
+| `image` | `Config.Image` | declared image |
+| `entrypoint` | `Config.Entrypoint` | declared entrypoint |
+| `user`, `group_add` | `Config.User`, `HostConfig.GroupAdd` | container user and supplemental groups |
+| `privileged`, `read_only` | `HostConfig.Privileged`, `ReadonlyRootfs` | privileges and root filesystem access |
+| `cap_add`, `cap_drop` | `HostConfig.CapAdd`, `CapDrop` | capability limits |
+| `security_opt` | `HostConfig.SecurityOpt` | seccomp and other security options |
+| `runtime`, namespace settings | `HostConfig.Runtime`, `PidMode`, `IpcMode`, `CgroupnsMode`, `UsernsMode`, `UTSMode` | runtime and namespace isolation |
+| `sysctls`, `cgroup_parent`, `isolation` | corresponding `HostConfig` fields | kernel and host-dependent isolation settings |
+| mounts and `volumes_from` | `HostConfig.Mounts`, `Binds`, `Tmpfs`, `VolumesFrom` | mounted data and host paths |
 | devices | `Devices`, `DeviceCgroupRules`, `DeviceRequests` | host device access |
-| `volumes_from` | `HostConfig.VolumesFrom` | another container's volumes |
-| `cgroup_parent` | `HostConfig.CgroupParent` | host cgroup placement |
-| `isolation` | `HostConfig.Isolation` | hypervisor/isolation mode |
-| `network_mode` | `HostConfig.NetworkMode` | host or foreign network namespace |
-| `networks` | endpoint names | Docker network attachment |
-| `ports` | `HostConfig.PortBindings` | host listeners |
+| `network_mode`, `networks` | `HostConfig.NetworkMode`, `Config.NetworkDisabled`, endpoint names | Docker network reachability |
+| `ports` | `HostConfig.PortBindings` | published host ports |
 
-The command itself is not compared because command override is the purpose of `docker compose run SERVICE COMMAND`. The entrypoint remains constrained because replacing it changes the program chosen by the Compose service while preserving the rest of the service's capabilities.
+`Config.Cmd` and environment variables are not compared: callers may choose the command and environment within the service's authorized execution environment. Other resource-consumption, logging, lifecycle, and container-local settings are generally forwarded, including restart policy, working directory, DNS configuration, and endpoint metadata. The field inventory records the exact treatment of each field.
 
-## Capability comparison
+### Capabilities and security options
 
-Capabilities use a safe-direction subset rule rather than exact equality.
+Capabilities are compared in the safe direction: a request may omit some `cap_add` entries or drop additional capabilities, but it may not add undeclared capabilities or restore any that Compose drops. Capability names are normalized before comparison.
 
-A request may:
+Compose `security_opt` values are converted to Docker's representation. Seccomp profile files are loaded and resolved at proxy startup because Docker receives their contents, not their filenames. A missing or invalid profile prevents startup. Undeclared security options are refused on create; inspect mode allows daemon-added options but still requires the declared ones.
 
-- omit capabilities from Compose `cap_add`; and
-- add extra entries to `cap_drop`.
+### Mounts
 
-A request may not:
+`HostConfig.Binds`, `HostConfig.Mounts`, and `HostConfig.Tmpfs` are compared by their resolved mount semantics rather than by their API representation. The request must contain every Compose-declared mount and no additional mount or duplicate target.
 
-- add a capability that Compose did not grant; or
-- restore a capability that Compose explicitly dropped.
+The comparison covers mount type, source, target, read-only status, bind propagation and recursive options, host-path creation, SELinux relabeling, volume and image subpaths, volume `nocopy`, and driver or label options that affect host or persistent state. Resource and container-local options such as tmpfs size and mode are forwarded.
 
-Capability names are canonicalized so equivalent spellings such as `NET_ADMIN`, `net_admin`, and `CAP_NET_ADMIN` compare identically.
+Relative bind sources are resolved against the Compose project directory. Named volumes are resolved to Docker resource names. File-backed Compose secrets and configs are included as their resulting bind mounts.
 
-## Security options
+### Networking and ports
 
-Compose `security_opt` entries are normalized to the representation sent to Docker before comparison. Seccomp profile files are read and compacted while the policy is built, because Compose sends the profile contents to the daemon rather than the filename. A profile that is missing or is not JSON prevents the proxy from starting, so a decision never depends on what the file holds at the moment the request arrives.
+The network mode and attached network names must match the Compose service. Undeclared attachments and missing required networks are refused. Endpoint metadata such as aliases, addresses, gateway priority, and driver options is forwarded after the network attachment is authorized.
 
-On container creation, undeclared security options are rejected because the proxy cannot generally determine whether an arbitrary additional option hardens or weakens the container.
+`docker compose run` omits published service ports by default, so a request may omit Compose-declared `PortBindings`. Any binding it does request must match a declared binding. `Config.ExposedPorts` is forwarded because it does not create a host listener; `HostConfig.PublishAllPorts` is refused.
 
-On inspect, daemon-added security options may be present. The inspect path therefore permits additions that cannot be distinguished from daemon defaults while still requiring every Compose-declared option to remain effective.
+### Fields not represented safely by Compose
 
-## Mount policy
+Some Docker-only values are refused instead of compared:
 
-Docker represents Compose mounts through `HostConfig.Binds`, `HostConfig.Mounts` and `HostConfig.Tmpfs`. The policy reduces all supported representations to one internal mount comparison shape before deciding whether the request matches Compose.
-
-The representation is not itself authoritative. The resulting mount semantics are.
-
-The policy compares properties that affect which host or persistent state the container can reach or alter:
-
-| Mount property | Why it is compared |
+| Docker field | Rule |
 | --- | --- |
-| type, source, target | selects the backing host path, volume, image, and container path |
-| read-only | controls write access |
-| bind propagation | can propagate mount changes across mount namespaces |
-| recursive bind options | changes which parts of the source tree are visible or writable |
-| `create_host_path` / `CreateMountpoint` | can make Docker create a host directory |
-| SELinux relabel mode | changes labels on a host path |
-| volume subpath | constrains the visible portion of a volume |
-| `nocopy` | changes copying into persistent volume state |
-| per-mount volume driver/options | invokes host-side driver behavior |
-| volume labels | changes persistent volume metadata |
-| image subpath | constrains the visible portion of an image mount |
+| `HostConfig.MaskedPaths`, `ReadonlyPaths` | refuse create-time overrides of daemon confinement |
+| `HostConfig.Cgroup` | refuse direct cgroup selection |
+| `HostConfig.ContainerIDFile` | refuse a daemon write to an arbitrary host path |
+| `HostConfig.PublishAllPorts` | refuse undeclared host listeners |
+| `Config.Volumes` | refuse on create; skip on inspect because images may declare volumes |
 
-Tmpfs size and mode, mount consistency, and similar resource/container-local options are forwarded.
+Host-dependent fields that Compose can express, including `StorageOpt`, `VolumeDriver`, and runtime `Annotations`, are compared exactly rather than assumed safe.
 
-Relative bind sources are resolved against the Compose project working directory. Named volume and network Compose keys are resolved to their Docker names. Resolution is one-way; Docker resource names are not mapped back to arbitrary Compose keys.
+## Images, networks, and volumes
 
-Secrets and file-backed configs that Compose materializes as bind mounts are added to the expected mount set before comparison.
+Image inspection and pulling are limited to references declared by the Compose project. Image names are normalized for implicit registry, namespace, and tag defaults. Pull requests cannot use `fromSrc`, bulk or multi-image pulls, or undeclared references.
 
-## Port policy
+Network and volume inspection is limited to names declared in the project, including external resources. Creating a resource requires its resolved name and a matching Compose definition; resources marked `external` cannot be created through the proxy.
 
-`HostConfig.PortBindings` is checked asymmetrically because `docker compose run` does not publish service ports by default.
+- **Networks:** driver, driver options, `internal`, `attachable`, IPv4/IPv6 settings, management labels, and IPAM must match. Ingress and config-only networks are refused. Network scope may be empty, `local`, or `swarm`. IPAM pools are compared individually; if Compose declares no IPAM, a request cannot introduce an IPAM plugin or options (the built-in `default` driver is allowed).
+- **Volumes:** driver, driver options, and required Compose management labels must match. Cluster volume specifications are refused.
 
-The request may omit bindings declared by the service. Every binding the request does contain must correspond to a Compose-declared binding.
+## List requests
 
-`Config.ExposedPorts` is not itself sufficient to create a host listener and is therefore forwarded. `PublishAllPorts` is refused because it creates host listeners not described by the Compose project.
+Lists have no individual resource to inspect, so requests must be scoped before forwarding:
 
-## Network policy
+- Container lists require a filter for `com.docker.compose.project=<project>`.
+- Network and volume lists require that project filter or a `name` filter naming a declared resource.
 
-The requested network mode and the set of attached Docker network names are constrained by Compose.
-
-A request may not:
-
-- switch into host networking unless Compose declares it;
-- join another container's network namespace unless Compose declares it;
-- attach to an undeclared Docker network; or
-- omit a network required by the service.
-
-Endpoint metadata such as aliases, static addresses, MAC address, gateway priority, and endpoint driver options is forwarded once attachment to the network itself has been authorized.
-
-Network creation is compared against the Compose network it claims to create: driver, driver options, internal, attachable, IPv4/IPv6 enablement, scope and management labels must all be declared. Ingress networks, config-only networks and external networks are refused, because Compose never creates them.
-
-IPAM is compared pool by pool. Where the Compose network declares no IPAM, the request may not name an IPAM driver or driver options either: Compose sends no IPAM at all in that case, so such a value would be the client's choice of a host-side plugin the proxy cannot reason about. An empty driver and the Engine's built-in `default` are the same request, because the Engine substitutes the built-in IPAM driver for an empty name.
-
-## Docker-only fields
-
-Some Docker API fields do not have a usable Compose equivalent.
-
-Security-sensitive examples are refused rather than guessed:
-
-| Field | Treatment |
-| --- | --- |
-| `HostConfig.MaskedPaths`, `ReadonlyPaths` | refused on create when the request attempts to override daemon confinement |
-| `HostConfig.Cgroup` | refused because it directly names a cgroup the proxy cannot resolve |
-| `HostConfig.ContainerIDFile` | refused because its API contract names a host path for daemon output |
-| `HostConfig.PublishAllPorts` | refused because it creates undeclared host listeners |
-| `Config.Volumes` | refused on create because it declares an anonymous mount outside the canonical mount representations the policy compares |
-
-Host-dependent values that Compose can express, such as `StorageOpt`, `VolumeDriver`, and runtime `Annotations`, are exact-matched instead of interpreted.
-
-## Forwarded fields
-
-Resource-consumption and container-local fields are not compared with Compose: limits and resource settings, lifecycle and logging options, environment, command, networking details such as DNS and endpoint metadata, and fields such as `Config.ExposedPorts` and container labels.
-
-`internal/policy/inventory_test.go` lists every one of them with the reason it is forwarded.
-
-## Existing containers
-
-Existing-container operations require both Compose ownership labels and matching security-sensitive state.
-
-The proxy reconstructs a create-like request from the Engine inspect result and reuses the same comparison logic in inspect mode.
-
-Inspect mode skips only checks that cannot be reconstructed reliably because the daemon fills or normalizes the value after creation: an entrypoint, user or volume declaration the image contributed, the runtime, the namespaces, the masked and read-only paths, and daemon-added security options. An explicitly declared entrypoint, including `entrypoint: []`, is still compared. A user is compared when Compose declares a non-empty value. Security-sensitive differences that remain observable continue to cause denial.
-
-On inspect, the endpoint the Engine creates for a pinned `network_mode` is ignored: an inspect result reports one for `network_mode: none` or `network_mode: host`, while a create request never carries it. The mode itself is still compared, and any further attached network is still refused.
-
-The request's Compose service label is a hint for create-time service matching, not an authority. Existing-container ownership requires the project label, a declared service, and a security-state match.
-
-## Protected services
-
-A service that mounts the upstream Docker socket directly is protected, for the reason [security-model.md](security-model.md) gives. The rule is applied as follows.
-
-### On creation
-
-A protected service is matched like any other and then refused by name: the refusal names the service and no field. Protected services are not filtered out of the candidate set, so the field comparisons still run for them and a mismatch is still reported as the field that differs.
-
-The request's Compose service label only orders the candidates and cannot bypass the rule.
-
-### On existing containers
-
-Ownership is resolved first, from the Engine's inspect result. Only then is the operation checked against the protected set, using the service the inspect result resolved to.
-
-| Operation | Effect | Protected service |
-| --- | --- | --- |
-| `GET /containers/json` | read-only | allowed |
-| `GET /containers/{id}` | read-only | allowed |
-| `GET /containers/{id}/json` | read-only | allowed |
-| `POST /containers/{id}/wait` | read-only | allowed |
-| `POST /containers/{id}/start` | control | denied |
-| `POST /containers/{id}/stop` | control | denied |
-| `POST /containers/{id}/kill` | control | denied |
-| `DELETE /containers/{id}` | control | denied |
-| `POST /containers/{id}/attach` | control | denied |
-| `POST /containers/{id}/resize` | control | denied |
-
-Each allowlisted container operation is either observation or control, and only observation is granted on a protected container. The observations are listed explicitly in `readOnlyOperations` in `internal/policy/routes.go`; every other allowlisted container operation is control, so a new endpoint is denied for a protected container without having to be classified.
-
-Ordinary containers keep every operation the allowlist grants them.
+Docker treats a `name` filter as an unanchored regular expression. The proxy replaces an authorized name filter with an escaped, anchored expression so similarly named resources cannot be included. Other filters are preserved because Docker combines different filter keys with AND.
 
 ## Docker API allowlist
 
-Authorization is deny-by-default. The current allowlist is the set needed by `docker compose run` and `compose-exec`:
+Only the following methods and endpoints are supported. Unknown endpoints, unsupported methods, and endpoints without a corresponding authorization rule are denied.
 
 ```text
 /_ping                                       GET, HEAD
 /version                                     GET
 /info                                        GET
 
-/containers/create                           POST
-/containers/json                             GET
-/containers/{id}                             GET, DELETE
-/containers/{id}/json                        GET
-/containers/{id}/attach                      POST
-/containers/{id}/start                       POST
-/containers/{id}/wait                        POST
-/containers/{id}/stop                        POST
-/containers/{id}/kill                        POST
-/containers/{id}/resize                      POST
+/containers/create                           POST         one-off create
+/containers/json                             GET          project-scoped list
+/containers/{id}                             GET          read-only
+/containers/{id}                             DELETE       one-off control
+/containers/{id}/json                        GET          read-only
+/containers/{id}/wait                        POST         read-only
+/containers/{id}/attach                      POST         one-off control
+/containers/{id}/start                       POST         one-off control
+/containers/{id}/stop                        POST         one-off control
+/containers/{id}/kill                        POST         one-off control
+/containers/{id}/resize                      POST         one-off control
 
-/images/create                               POST
-/images/{name}/json                          GET
+/images/create                               POST         declared image pull
+/images/{name}/json                          GET          declared image inspect
 
-/networks                                    GET
-/networks/{id}                               GET
-/networks/create                             POST
+/networks                                    GET          scoped list
+/networks/{id}                               GET          declared network inspect
+/networks/create                             POST         declared network create
 
-/volumes                                     GET
-/volumes/{name}                              GET
-/volumes/create                              POST
+/volumes                                     GET          scoped list
+/volumes/{name}                              GET          declared volume inspect
+/volumes/create                              POST         declared volume create
 ```
 
-An allowlisted endpoint with no rule of its own is refused rather than forwarded: joining the allowlist must not authorize an operation by itself.
+A control operation also requires a matching existing container and must not target a protected service. Read-only operations on individual containers require the same ownership and inspect-mode comparison but do not require the one-off label.
 
-## List scoping
+Other Docker Compose workflows, including `up`, `down`, `exec`, `logs`, `build`, and `push`, are not supported through this socket.
 
-A list request has to prove on its own that it cannot observe anything outside the project, because it is not addressed at a resource whose ownership could be checked.
+## Docker API versions
 
-- Containers must be filtered by the project label. Docker ANDs the patterns inside one filter key, so Compose's own `label` filter is narrow enough.
-- Networks and volumes may instead be filtered by `name`, because that is how Compose looks a declared resource up.
+The proxy recognizes Docker API versions only through the newest version it has validated. Requests naming a newer version are denied, even when the Engine itself supports them. The original versioned request path is forwarded after authorization.
 
-A `name` filter is not an exact match: the Engine applies it as an unanchored regular expression, so the bare name Compose sends would also return `demo_frontend_other` and any other resource whose name contains it. The proxy therefore forwards the anchored, escaped name it authorized instead of the string the client sent. The forwarded pattern matches that one declared resource and nothing else, which is what makes the list scoped.
-
-The filter keys of one request are ANDed by the Engine, so any other key can only narrow a result the scoping key already bounded. A request that carries neither a project label nor a declared name is refused.
-
-## API version handling
-
-Authorization removes the Docker API version prefix only to resolve the endpoint. The original versioned path is forwarded upstream so the Engine interprets the request using the client's negotiated API version.
-
-Requests using an API version newer than the version validated by the current build are refused instead of being passed through unchecked.
-
-The two negotiation endpoints answer for the proxy rather than for the Engine: `/_ping` reports the validated version in `API-Version`, and `/version` reports it in `ApiVersion`, which is the older of the Engine's version and the validated one.
-Every other field of the Engine's answer is relayed unchanged, including a field a newer Engine adds.
-A client therefore negotiates to a version the proxy forwards, while a request that names a newer version in its path is still refused.
-
-The proxy reads the Engine's API versions once at startup, and refuses to start unless the two share at least one.
+During API negotiation, `/_ping` and `/version` report the lower of the Engine's version and the proxy's validated version, while preserving the other Engine response fields. At startup, the proxy verifies that it and the Engine support at least one common API version.

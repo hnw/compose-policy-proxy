@@ -302,7 +302,11 @@ func TestSocketDeliveredByAnyRouteIsRefusedWhateverLabelTheRequestClaims(t *test
 		t.Run(claim, func(t *testing.T) {
 			claimed := *req
 			config := *req.Config
-			config.Labels = map[string]string{LabelProject: projectName, LabelService: claim}
+			config.Labels = map[string]string{
+				LabelProject: projectName,
+				LabelService: claim,
+				LabelOneoff:  oneoffLabelValue,
+			}
 			claimed.Config = &config
 			body, err := json.Marshal(&claimed)
 			if err != nil {

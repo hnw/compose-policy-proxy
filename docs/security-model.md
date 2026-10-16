@@ -56,6 +56,12 @@ Request bodies are decoded strictly. A field that the Moby types do not know fai
 
 Authorization is deny-by-default in both directions. An operation no rule covers is refused, and a request that cannot prove it stays inside the project -- a list operation, say -- is refused rather than read as unrestricted access.
 
+## One-off containers
+
+`docker compose run` creates one-off containers. The proxy allows these containers to be created and controlled, but ordinary service containers cannot be created or controlled through the restricted socket. Read-only operations remain available for existing service containers that pass the ownership and configuration checks.
+
+One-off containers are identified by `com.docker.compose.oneoff=True`. Because this label is client-controlled, it does not prove that a request came from Docker Compose. One-off containers must still match their Compose service configuration and cannot belong to a protected service. The label does not limit how long a container can run.
+
 ## Existing-container ownership
 
 Operations on an existing container require both project identity and matching security-sensitive state.

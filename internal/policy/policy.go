@@ -220,6 +220,11 @@ func (p *Policy) authorizeContainer(ctx context.Context, op operation, method st
 	if err := p.protected.checkContainerOperation(service, op.Endpoint, method); err != nil {
 		return "", err
 	}
+	if !isReadOnlyOperation(op.Endpoint, method) {
+		if err := checkOneOff(insp.Config.Labels); err != nil {
+			return "", err
+		}
+	}
 	return service, nil
 }
 

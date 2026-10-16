@@ -59,7 +59,8 @@ func TestServeHTTPRefusesWithoutForwarding(t *testing.T) {
 		},
 		{
 			name: "a field the compose file does not declare", method: "POST", path: "/v1.51/containers/create",
-			body: `{"Image":"alpine:3.20","User":"root","HostConfig":{"NetworkMode":"demo_frontend"},` +
+			body: `{"Image":"alpine:3.20","User":"root","Labels":` + oneOffLabels() +
+				`,"HostConfig":{"NetworkMode":"demo_frontend"},` +
 				`"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`,
 			message: `compose-policy-proxy: service "app": Config.User: compose declares "", found "root"`,
 		},
@@ -109,8 +110,9 @@ func TestServeHTTPLogsEachDecision(t *testing.T) {
 			`"Labels":{"com.docker.compose.project":"demo","com.docker.compose.network":"frontend"}}`},
 		{"GET", "/v1.51/containers/json", ""},
 		{"POST", "/v1.51/containers/abc/exec", ""},
-		{"POST", "/v1.51/containers/create", `{"Image":"alpine:3.20","User":"root",` +
-			`"HostConfig":{"NetworkMode":"demo_frontend"},"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`},
+		{"POST", "/v1.51/containers/create", `{"Image":"alpine:3.20","User":"root","Labels":` +
+			oneOffLabels() + `,"HostConfig":{"NetworkMode":"demo_frontend"},` +
+			`"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`},
 	}
 	for _, op := range ops {
 		resp := do(t, socket, op.method, op.path, op.body)
@@ -195,7 +197,8 @@ func TestServeHTTPHidesAComposeSecret(t *testing.T) {
 	var out strings.Builder
 	socket, _ := testProxyWithLogger(t, project, slog.NewTextHandler(&out, nil))
 	resp := do(t, socket, "POST", "/v1.51/containers/create",
-		`{"Image":"alpine:3.20","HostConfig":{"NetworkMode":"demo_frontend",`+
+		`{"Image":"alpine:3.20","Labels":`+oneOffLabels()+
+			`,"HostConfig":{"NetworkMode":"demo_frontend",`+
 			`"StorageOpt":{"type":"nfs","o":"other"}},`+
 			`"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`)
 	defer func() { _ = resp.Body.Close() }()
@@ -210,6 +213,11 @@ func TestServeHTTPHidesAComposeSecret(t *testing.T) {
 	if strings.Contains(string(body), secret) || strings.Contains(out.String(), secret) {
 		t.Errorf("%q reached the client or the log:\n%s\n%s", secret, body, out.String())
 	}
+}
+
+func oneOffLabels() string {
+	return `{"com.docker.compose.project":"demo","com.docker.compose.service":"app",` +
+		`"com.docker.compose.oneoff":"True"}`
 }
 
 func demoProject() *types.Project {
