@@ -159,6 +159,59 @@ func TestOwnershipSurvivesRestart(t *testing.T) {
 	}
 }
 
+// `start` and `stop` address a container Compose created earlier, and the proxy does
+// not create service containers, so the host makes one exist first.
+const startStopCompose = `services:
+  app:
+    image: %IMAGE%
+    command: ["sh", "-c", "sleep 600"]
+`
+
+func newStartStopProject(t *testing.T) *project {
+	t.Helper()
+	p := newProject(t, render(startStopCompose, testImage), nil)
+	t.Cleanup(func() { p.cleanup(t) })
+	return p
+}
+
+func TestStartAndStopThroughTheProxy(t *testing.T) {
+	p := newStartStopProject(t)
+	h := startProxy(t, p)
+
+	h.composeOnEngine("create", "app")
+	id := p.containerForService(t, "app")
+
+	h.mustCompose("start", "app")
+	if !h.isRunning(id) {
+		t.Fatal("docker compose start did not start the container")
+	}
+	h.mustCompose("stop", "app")
+	if h.isRunning(id) {
+		t.Fatal("docker compose stop did not stop the container")
+	}
+}
+
+func TestStartAndStopAreRefusedWithoutTheirCommand(t *testing.T) {
+	p := newStartStopProject(t)
+	h := startProxy(t, p, "--allow-command=run")
+
+	h.composeOnEngine("create", "app")
+	id := p.containerForService(t, "app")
+
+	if out := h.mustDenyCompose("start", "app"); !strings.Contains(out, "compose start is not available") {
+		t.Errorf("expected the refusal to name the command, got:\n%s", out)
+	}
+	if h.isRunning(id) {
+		t.Fatal("a refused start started the container anyway")
+	}
+
+	h.composeOnEngine("start", "app")
+	h.mustDenyCompose("stop", "app")
+	if !h.isRunning(id) {
+		t.Fatal("a refused stop stopped the container anyway")
+	}
+}
+
 func TestCannotListOutsideProject(t *testing.T) {
 	p := newBaseProject(t)
 	h := startProxy(t, p)

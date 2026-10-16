@@ -16,7 +16,7 @@ go test -race ./...
 
 ### End-to-end tests
 
-The repository contains end-to-end tests under `test/e2e` that drive real `docker compose run` traffic through the proxy against a Docker Engine. They skip when the required Engine or Compose plugin is unavailable.
+The repository contains end-to-end tests under `test/e2e` that drive real `docker compose` traffic through the proxy against a Docker Engine. They skip when the required Engine or Compose plugin is unavailable.
 
 E2E runs also depend on the project directory being bind-mountable by the Docker host. Relative bind mounts resolve to the project's absolute host path, so a test environment where that path is not visible to the Engine cannot validate the intended behavior correctly.
 
@@ -28,7 +28,7 @@ One decision, one place:
 
 | Package | Responsibility |
 | --- | --- |
-| `internal/policy` | every authorization decision: the Compose project, the protected services, the Docker API allowlist and API versions, request decoding, service matching, ownership of existing containers, and the images, networks and volumes the project declares |
+| `internal/policy` | every authorization decision: the Compose project, the protected services, the allowed command set, the Docker API allowlist and API versions, request decoding, service matching, ownership of existing containers, and the images, networks and volumes the project declares |
 | `internal/proxy` | transport: HTTP handling, forwarding, streaming and connection hijacking, the denial response, and the decision log |
 | `internal/compose` | loading and resolving the Compose project, and deriving the protected services from its mounts |
 | `internal/engine` | the read-only Docker Engine queries authorization needs, and the API versions startup is checked against |

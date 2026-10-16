@@ -1,91 +1,84 @@
 # Security model
 
-`compose-policy-proxy` treats the resolved Compose project as a capability boundary for Docker API access.
+`compose-policy-proxy` uses the resolved Compose project as the authority for Docker API access through its restricted socket.
 
-The proxy assumes that a client with access to its Unix socket may be hostile. The client is allowed to exercise what the Compose project already grants, but it must not use the Docker API to acquire additional host access, privilege, isolation escape, or Docker control-plane authority.
+Any client with access to the socket is treated as untrusted. The proxy prevents it from acquiring host access, privileges, isolation settings, or Docker control-plane authority beyond what the Compose project permits.
 
-The proxy does not judge whether the Compose project itself is safe. A dangerous capability explicitly granted by Compose remains granted through the proxy.
+The Compose project itself is trusted. If it grants a dangerous capability, the proxy does not revoke it. Within an authorized execution environment, clients may override commands, arguments, and environment variables.
 
-The proxy restricts the container execution environment, not the command being run. A client may override the command and arguments and change container environment variables within an authorized service. Any access available to that service remains available to the commands it runs.
+## Security boundaries
 
-## Protected boundaries
-
-The current policy protects five boundaries.
+The policy protects five boundaries.
 
 | Boundary | Examples of what is prevented |
 | --- | --- |
 | Host confidentiality | reading undeclared host paths, another container's volumes, host devices, credentials, or the Docker socket |
-| Host integrity | writing undeclared host paths, writing through extra mounts, accessing devices, or mutating Docker resources outside the project |
-| Isolation | enabling `privileged`, adding undeclared capabilities, weakening security options, joining host or foreign namespaces, changing runtime, or restoring writable access Compose removed |
+| Host integrity | writing undeclared host paths, accessing extra mounts or devices, or modifying Docker resources outside the project |
+| Isolation | enabling `privileged`, adding undeclared capabilities, weakening security options, joining host or foreign namespaces, or changing the runtime |
 | Docker control plane | operating on containers, networks, or volumes outside the Compose project |
-| The proxy's own authority | creating, starting, stopping, killing, removing, or attaching to a service that holds the Docker socket directly |
+| Proxy authority | creating or controlling services that have direct access to the upstream Docker socket |
 
-Docker-specific network exposure is also restricted when the Docker API is the point where that exposure is created. Examples include host networking, joining another container's network namespace, attaching to an undeclared Docker network, publishing all ports, or binding a host port that Compose did not declare.
+The proxy also restricts Docker-specific network exposure, including host networking, undeclared network attachments, and host port bindings not authorized by Compose.
 
 ## Out of scope
 
-Two concerns are intentionally outside the current policy boundary.
+**General outbound network access.** A container may contact the LAN or Internet through its authorized network. Restricting destinations requires a firewall, network policy, or egress proxy. Docker-specific changes to network exposure remain subject to this proxy's policy.
 
-**General outbound network abuse.** A container may use the network it has already been given to contact the LAN or Internet. Restricting those destinations belongs to a network policy, firewall, or egress proxy rather than to this Docker API proxy. The proxy still restricts Docker-specific changes that create new exposure, such as `NetworkMode: host`, undeclared network attachments, and undeclared host port bindings.
+**Resource exhaustion.** CPU, memory, shared memory, PID limits, file-descriptor limits, restart policy, logging configuration, and similar availability controls are forwarded without comparison against Compose. The proxy does not attempt to determine whether one resource configuration is safer than another.
 
-**Resource exhaustion.** CPU, memory, shared memory, PID limits, file-descriptor limits, restart policy, logging configuration, and similar availability controls are not constrained against the Compose value. The proxy forwards those fields, and does not attempt to define a general "safer than Compose" ordering for them.
+The proxy also does not restrict what an authorized command does within its container. Any access granted to the service remains available to that command.
 
 ## Field classification
 
-Every Docker request field inspected by the policy belongs to one of five classes.
+Docker request fields are classified by their security effects.
 
 | Class | Meaning | Policy action |
 | --- | --- | --- |
-| A | can widen host confidentiality, host integrity, or isolation | compare with Compose or refuse |
-| B | can add Docker-specific network exposure | compare with Compose |
-| C | affects availability or resource consumption | forward |
-| D | affects container-local behavior, lifecycle, or general network behavior | forward |
-| E | security impact cannot be bounded cheaply | refuse, or exact-match when Compose can express the value |
+| A | Can widen host confidentiality, host integrity, or isolation | Compare with Compose or refuse |
+| B | Can add Docker-specific network exposure | Compare with Compose |
+| C | Affects availability or resource consumption | Forward |
+| D | Affects container-local behavior, lifecycle, or general network behavior | Forward |
+| E | Security impact cannot be bounded cheaply | Refuse, or exact-match when Compose can express the value |
 
-The classification is intentionally based on security effect rather than on whether Compose happens to have a corresponding field.
+Classification depends on a field's effects, not simply on whether Compose has a corresponding setting.
 
-Fields whose effect depends on host-installed storage drivers, runtimes, or plugins are not assumed to be harmless. When Compose can express them, the proxy uses exact matching instead of trying to infer which value is safer.
+Host-dependent values such as storage drivers, runtimes, and plugins are not assumed safe. When Compose can express them, the proxy compares them exactly instead of trying to determine which value is less permissive.
 
-The detailed field classification and comparison rules are documented in [policy.md](policy.md).
+See [policy.md](policy.md) for the comparison rules and `internal/policy/inventory_test.go` for the field inventory.
 
 ## Fail-closed behavior
 
-Unknown Docker API fields are not silently accepted.
+Requests are denied unless an explicit rule authorizes them. Unknown endpoints, unsupported API versions, and operations without an authorization rule are refused. List requests must also be scoped to authorized resources.
 
-Request bodies are decoded strictly. A field that the Moby types do not know fails decoding. In addition, the test suite classifies every field of the Docker request structures the policy reads, so a Moby dependency upgrade that adds a known-but-unclassified field fails tests until that field receives an explicit policy decision.
+Request bodies are decoded strictly, so unknown fields are rejected. The field inventory tests require every field in the Docker request structures used by the policy to be classified. A Moby dependency update that introduces an unclassified field therefore fails tests until the field is reviewed.
 
-Authorization is deny-by-default in both directions. An operation no rule covers is refused, and a request that cannot prove it stays inside the project -- a list operation, say -- is refused rather than read as unrestricted access.
+## Container creation and control
 
-## One-off containers
+Container creation is limited to one-off containers, as used by `docker compose run`. Existing service containers may be started and stopped, but cannot be created or otherwise controlled through the restricted socket. Read-only operations remain available when the container passes the ownership and configuration checks.
 
-`docker compose run` creates one-off containers. The proxy allows these containers to be created and controlled, but ordinary service containers cannot be created or controlled through the restricted socket. Read-only operations remain available for existing service containers that pass the ownership and configuration checks.
+One-off containers are identified by `com.docker.compose.oneoff=True`. This label is client-controlled and does not prove that Docker Compose made the request. The container must still match a declared Compose service. The label does not limit how long a container may run.
 
-One-off containers are identified by `com.docker.compose.oneoff=True`. Because this label is client-controlled, it does not prove that a request came from Docker Compose. One-off containers must still match their Compose service configuration and cannot belong to a protected service. The label does not limit how long a container can run.
+The `--allow-command` setting controls which supported operations are available to clients of the socket. It applies to all clients equally and does not authenticate them. It cannot bypass the Compose configuration or the protected-service restrictions.
+
+See [policy.md](policy.md) for the supported commands, their Docker API operations, and the authorization rules.
 
 ## Existing-container ownership
 
-Operations on an existing container require both project identity and matching security-sensitive state.
+An existing container is authorized only when both its project identity and security-sensitive configuration match the resolved Compose project.
 
-A Compose project label alone is not ownership: a foreign container could copy the label. Matching security state alone is also insufficient: another project could legitimately create an identical container.
+The proxy requires a matching project label, a declared service label, and the security settings that can be verified from the Engine's inspect result. Labels alone are insufficient because another client may create a container carrying the same labels. Matching configuration alone is insufficient because another project may legitimately use the same settings.
 
-The proxy therefore requires both:
+The proxy obtains this information from the Engine rather than maintaining its own ownership database. A client cannot choose a different service for an existing-container operation by supplying labels in that request.
 
-- the container belongs to the configured Compose project and names a declared service; and
-- the security settings that an inspect result can still show match what that service grants.
+Docker normalizes some container settings after creation, so inspect results cannot reconstruct every original request field. Inspect-mode comparison skips checks whose original values cannot be reliably recovered. Consequently, authorization of an existing container does not prove that its original create request would pass the current policy.
 
-Ownership is derived from the Engine's current inspect result rather than from proxy-local memory, so restarting the proxy does not erase ownership information. A client-supplied label cannot influence which service a container is judged against.
-
-The second condition is a check of the container's state now, not a replay of the request that created it. The daemon completes and normalizes the values it was given, so an inspect result cannot say which of them the client asked for. Inspect mode therefore skips the comparisons whose original value is not recoverable, and nothing more: it does not relax the create-time policy. Authorizing an existing container does not prove that every setting of its create request still matches the current Compose definition.
-
-Existing containers are checked against the current Compose definition, but some create-time settings cannot be reliably reconstructed from inspect results. Recreate existing containers after changing security-sensitive settings.
+Containers should be recreated after security-sensitive Compose settings change.
 
 ## Protected services
 
-A Compose project often contains the proxy itself. Such a service is mounted with the host Docker socket, so anything able to create or control it holds Docker directly and answers to nothing.
+A service with direct access to the upstream Docker socket can bypass the proxy entirely. Such services are **protected**: the proxy refuses to create or control their containers, even when the requested configuration matches Compose. Read-only operations remain available subject to the usual ownership checks.
 
-Those services are **protected**. Field comparison cannot express this restriction, because every field of a request that launches a protected service is exactly what Compose declares. The rule is therefore separate, and narrower: it recognizes the service, and then refuses the operation.
-
-A service is protected when **any** of its resolved Compose mounts satisfies all three conditions:
+A service is protected when any resolved Compose mount satisfies:
 
 ```text
 Type == bind
@@ -93,33 +86,30 @@ AND Destination == dockerHost
 AND Source != restrictedSocket
 ```
 
-- `dockerHost` is the upstream Docker socket, from `--docker-host` (default `/var/run/docker.sock`).
-- `restrictedSocket` is the proxy's own listening socket, from `--listen` (default `/run/compose-policy-proxy/docker.sock`).
-- `Source` and `Destination` are the host source and container target of the resolved Compose mount.
+Here, `dockerHost` is the upstream socket path configured by `--docker-host`, and `restrictedSocket` is the proxy's listening socket configured by `--listen`. The comparison uses the configured paths rather than assuming a fixed Docker socket location.
 
-Resolved mounts include the read-only binds Compose derives from `secrets:` and `configs:`, because that is the mount the container ends up with. Delivering the socket either way does not make a service unprotected.
+Resolved mounts include bind mounts generated from file-backed Compose `secrets:` and `configs:`. Read-only access to the upstream socket is still direct Docker access and does not exempt a service from protection.
 
-The destination is what is compared rather than an assumed host location, because a deployment may serve the Engine socket somewhere else, such as a rootless Docker socket. The source exclusion covers the deployment where the proxy runs on the host and hands its restricted socket to application containers at the usual Docker socket path: that container reaches the Engine only through the proxy.
+The source exception allows an application to mount the restricted socket at the Docker socket path without becoming protected.
 
-The restriction applies through every Docker API endpoint that can reach the container, not only those under `/containers/`. Ownership is resolved first, so the check can only narrow a decision already made from the container itself rather than from a client-supplied label. [policy.md](policy.md) lists which operations remain available on a protected container.
+Protection is determined from the Compose definition, including its resolved mounts. The proxy does not inspect the host filesystem to discover other ways a container might reach the Docker Engine.
 
-### Limitations
+### Detection limitations
 
-Detection reads the Compose file, not the host. It cannot answer:
+The protected-service rule does not detect:
 
-- a parent directory mounted at a path that contains the socket;
-- access through a symlink;
-- a Docker socket mounted at some other container path;
+- a parent directory mount containing the socket;
+- access through symlinks;
+- a Docker socket mounted at a different container path;
 - Docker API access over TCP or SSH;
-- a custom volume driver exposing host paths;
-- any other way of reaching an Engine that is not a bind mount of the socket.
+- host access exposed through a custom volume driver or another mechanism not represented by the checked bind mount.
 
-The rule also does not verify what a host path actually is. A bind of an unrelated file onto the Docker socket path is treated as protected, because the destination is the path a client can reach Docker through.
+The rule also does not verify that a bind source is actually a Docker socket. Mounting an unrelated file at the configured Docker socket destination still makes the service protected.
 
-Changing which services are protected requires restarting the proxy, like every other policy decision.
+These limitations mean the rule cannot guarantee that every service with Docker Engine access is detected. Operators must review the Compose configuration for other paths to Docker access.
 
-## Policy authority lifetime
+## Policy lifetime
 
-The proxy resolves the Compose project once at startup. That resolved project is the policy authority for the lifetime of the process, including the set of protected services derived from it and the seccomp profiles its services name.
+The proxy resolves its Compose project, protected services, and seccomp profiles at startup. The allowed command set is also fixed at startup.
 
-Changing a Compose file does not alter the policy of an already-running proxy. A policy update therefore consists of changing the Compose definition and restarting the proxy.
+Changing the Compose definition or `--allow-command` does not update an already-running proxy. The proxy must be restarted for the new policy to take effect.

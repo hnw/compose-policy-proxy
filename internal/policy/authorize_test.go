@@ -76,10 +76,11 @@ func appContainer() container.InspectResponse {
 func demoPolicy(t *testing.T) *policy.Policy {
 	t.Helper()
 	p, err := policy.New(policy.Config{
-		Project:    demoProject(),
-		DockerHost: dockerSocket,
-		Listen:     listenSocket,
-		Engine:     inspectStub{"abc": appContainer()},
+		Project:         demoProject(),
+		DockerHost:      dockerSocket,
+		Listen:          listenSocket,
+		Engine:          inspectStub{"abc": appContainer()},
+		AllowedCommands: policy.DefaultCommands(),
 	})
 	if err != nil {
 		t.Fatalf("build policy: %v", err)
@@ -274,10 +275,11 @@ func TestOwnershipCannotBeFakedWithClientControlledLabels(t *testing.T) {
 	containerOf.Config.Labels[policy.LabelProject] = "someone-elses-project"
 	stub["abc"] = containerOf
 	p, err := policy.New(policy.Config{
-		Project:    project,
-		DockerHost: dockerSocket,
-		Listen:     listenSocket,
-		Engine:     stub,
+		Project:         project,
+		DockerHost:      dockerSocket,
+		Listen:          listenSocket,
+		Engine:          stub,
+		AllowedCommands: policy.DefaultCommands(),
 	})
 	if err != nil {
 		t.Fatalf("build policy: %v", err)
@@ -342,10 +344,11 @@ func seccompProject(dir string, disabled bool) *types.Project {
 
 func seccompPolicy(project *types.Project) (*policy.Policy, error) {
 	return policy.New(policy.Config{
-		Project:    project,
-		DockerHost: dockerSocket,
-		Listen:     listenSocket,
-		Engine:     inspectStub{},
+		Project:         project,
+		DockerHost:      dockerSocket,
+		Listen:          listenSocket,
+		Engine:          inspectStub{},
+		AllowedCommands: policy.DefaultCommands(),
 	})
 }
 

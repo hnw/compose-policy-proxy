@@ -54,11 +54,16 @@ func (p *Policy) matchCreate(req *container.CreateRequest) (string, error) {
 // chooses its own labels, so the label narrows what this proxy serves rather
 // than proving where the request came from.
 func checkOneOff(labels map[string]string) error {
-	if got := labels[LabelOneoff]; got != oneoffLabelValue {
+	if !isOneOff(labels) {
 		return denyf("", LabelOneoff,
-			"only one-off containers are allowed (expected %q, found %q)", oneoffLabelValue, got)
+			"only one-off containers are allowed (expected %q, found %q)",
+			oneoffLabelValue, labels[LabelOneoff])
 	}
 	return nil
+}
+
+func isOneOff(labels map[string]string) bool {
+	return labels[LabelOneoff] == oneoffLabelValue
 }
 
 // matchExistingContainer requires the project label and matching security state, since

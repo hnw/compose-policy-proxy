@@ -210,7 +210,7 @@ func TestResourceShapedPathsAreRefusedByOwnership(t *testing.T) {
 // TestEveryAllowlistedEndpointHasARule pins the fail-closed default from the
 // allowlist side, where an endpoint without a decision rule is refused.
 func TestEveryAllowlistedEndpointHasARule(t *testing.T) {
-	p := &Policy{project: &types.Project{Name: "demo"}, inspect: stubInspector{}}
+	p := &Policy{project: &types.Project{Name: "demo"}, inspect: stubInspector{}, commands: DefaultCommands()}
 
 	for endpoint := range allowlist {
 		_, _, _, err := p.decide(t.Context(), operation{Endpoint: endpoint, Target: "target"}, &Request{URL: &url.URL{}})

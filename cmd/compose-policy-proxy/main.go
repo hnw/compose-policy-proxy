@@ -38,9 +38,11 @@ func main() {
 
 func run() error {
 	var (
-		listen      = flag.String("listen", defaultListen, "path of the Unix socket to listen on")
-		dockerHost  = flag.String("docker-host", defaultDockerHost, "path of the Docker daemon socket to forward to")
-		socketMode  = flag.String("socket-mode", "0660", "file mode of the listening socket, in octal")
+		listen       = flag.String("listen", defaultListen, "path of the Unix socket to listen on")
+		dockerHost   = flag.String("docker-host", defaultDockerHost, "path of the Docker daemon socket to forward to")
+		socketMode   = flag.String("socket-mode", "0660", "file mode of the listening socket, in octal")
+		allowCommand = flag.String("allow-command", policy.DefaultCommandList,
+			"comma-separated Compose commands to allow: "+policy.DefaultCommandList)
 		logFormat   = flag.String("log-format", string(proxy.LogFormatText), "log format: text or json")
 		logLevel    = flag.String("log-level", "info", "log level: debug, info, warn or error")
 		showVersion = flag.Bool("version", false, "print the version and exit")
@@ -51,6 +53,11 @@ func run() error {
 	if *showVersion {
 		printVersion(os.Stdout)
 		return nil
+	}
+
+	commands, err := policy.ParseCommands(*allowCommand)
+	if err != nil {
+		return err
 	}
 
 	level, err := parseLevel(*logFormat, *logLevel)
@@ -92,17 +99,19 @@ func run() error {
 
 	// The policy is built before the socket exists too, for the same reason.
 	authz, err := policy.New(policy.Config{
-		Project:    project,
-		DockerHost: *dockerHost,
-		Listen:     *listen,
-		Engine:     eng,
+		Project:         project,
+		DockerHost:      *dockerHost,
+		Listen:          *listen,
+		Engine:          eng,
+		AllowedCommands: commands,
 	})
 	if err != nil {
 		return fmt.Errorf("build policy: %w", err)
 	}
-	logger.Info("resolved protected services",
+	logger.Info("resolved policy",
 		slog.String("docker_host", *dockerHost),
-		slog.Any("services", authz.ProtectedServices()),
+		slog.Any("commands", commands),
+		slog.Any("protected_services", authz.ProtectedServices()),
 	)
 
 	p := proxy.New(proxy.Config{
@@ -177,6 +186,9 @@ Flags:
 Examples:
   # Run the proxy inside a Compose project and let the application reach it.
   compose-policy-proxy --listen /run/compose-policy-proxy/docker.sock
+
+  # Allow only the one-off containers of "docker compose run".
+  compose-policy-proxy --allow-command=run
 `)
 }
 

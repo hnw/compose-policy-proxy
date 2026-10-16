@@ -83,10 +83,11 @@ func protectedFixture() (*Policy, map[string]*container.CreateRequest, stubInspe
 	inspector[service.Name] = inspectOf(*project, service, req)
 
 	p, err := New(Config{
-		Project:    project,
-		DockerHost: hostSocket,
-		Listen:     proxySocket,
-		Engine:     inspector,
+		Project:         project,
+		DockerHost:      hostSocket,
+		Listen:          proxySocket,
+		Engine:          inspector,
+		AllowedCommands: DefaultCommands(),
 	})
 	if err != nil {
 		panic(err)

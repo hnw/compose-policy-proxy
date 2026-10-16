@@ -269,10 +269,11 @@ func testProxyWithLogger(t *testing.T, project *types.Project, handler slog.Hand
 func testProxyWith(t *testing.T, project *types.Project, upstream *daemon, handler slog.Handler) (string, *daemon) {
 	t.Helper()
 	authz, err := policy.New(policy.Config{
-		Project:    project,
-		DockerHost: upstream.socket,
-		Listen:     upstream.socket,
-		Engine:     ownedContainers{},
+		Project:         project,
+		DockerHost:      upstream.socket,
+		Listen:          upstream.socket,
+		Engine:          ownedContainers{},
+		AllowedCommands: policy.DefaultCommands(),
 	})
 	if err != nil {
 		t.Fatalf("build policy: %v", err)

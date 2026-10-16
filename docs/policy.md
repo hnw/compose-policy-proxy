@@ -6,6 +6,22 @@ The policy is deny-by-default. An endpoint must be allowlisted, its method and A
 
 The field inventory in `internal/policy/inventory_test.go` records whether each Docker request field is compared, refused, or forwarded. The rules below explain those decisions.
 
+## Command selection
+
+`--allow-command` selects which Compose commands the proxy authorizes. It defaults to every supported command, `run,start,stop`, and a value given on the command line replaces that default rather than adding to it.
+
+| Command | Docker API operations it authorizes |
+| --- | --- |
+| `run` | one-off container create, and `start`, `stop`, `kill`, `remove`, `attach`, and `resize` of that one-off container; the declared image pull, network create, and volume create that `run` needs |
+| `start` | `POST /containers/{id}/start` on a service container of the project |
+| `stop` | `POST /containers/{id}/stop` on a service container of the project |
+
+An unsupported name is refused at startup, a repeated name changes nothing, and an empty list authorizes no command at all.
+
+The setting narrows what is authorized and nothing else. Every operation still has to pass the authorization conditions below: project and service ownership read from the Engine, the [configuration checks](#container-configuration), and the [protected service rule](#protected-services). Read-only operations are available under the existing conditions whatever the setting says, since `--allow-command` names no endpoint that observes without acting.
+
+`--allow-command` is not authentication. It does not decide which client is asking, so every client holding the socket gets the commands it names.
+
 ## Container authorization
 
 ### Creating containers
@@ -22,7 +38,7 @@ The proxy compares the request with the service named by the label. It does not 
 
 Labels are client-supplied. They select the policy to apply; they do not prove that Docker Compose made the request. `docker compose run` supplies these labels, but another Docker API client can also supply them.
 
-Normal service containers cannot be created through the restricted socket. A `docker compose run` invocation that needs a dependency created or started must have that dependency prepared outside the proxy.
+Normal service containers cannot be created through the restricted socket. A `docker compose run` invocation that needs a dependency therefore needs that container prepared outside the proxy, which may then start it through [the `start` command](#command-selection).
 
 ### Existing containers
 
@@ -34,9 +50,9 @@ For an operation targeting an existing container, the proxy inspects it through 
 
 The proxy does not trust labels supplied with the operation. It uses the labels and settings reported by the Engine. It keeps no container ownership database, so the same checks apply after a proxy restart.
 
-Read-only operations are available for matching service containers, including normal service containers. Control operations require `com.docker.compose.oneoff=True` in the inspect result and are denied for protected services. The [endpoint list](#docker-api-allowlist) identifies the operations in each group.
+Read-only operations are available for matching service containers, including normal service containers. Control operations require `com.docker.compose.oneoff=True` in the inspect result, except that a normal service container may be started and stopped by the [commands](#command-selection) of the same name. Control operations are denied for protected services. The [endpoint list](#docker-api-allowlist) identifies the operations in each group.
 
-The one-off label restricts which containers can be controlled, not how long they can run. A one-off container may run indefinitely or be started again.
+The one-off label restricts which containers a client may control, not how long they can run. A one-off container may run indefinitely or be started again.
 
 ### Inspect-mode comparison
 
@@ -147,8 +163,8 @@ Only the following methods and endpoints are supported. Unknown endpoints, unsup
 /containers/{id}/json                        GET          read-only
 /containers/{id}/wait                        POST         read-only
 /containers/{id}/attach                      POST         one-off control
-/containers/{id}/start                       POST         one-off control
-/containers/{id}/stop                        POST         one-off control
+/containers/{id}/start                       POST         one-off control, or `start` of a service container
+/containers/{id}/stop                        POST         one-off control, or `stop` of a service container
 /containers/{id}/kill                        POST         one-off control
 /containers/{id}/resize                      POST         one-off control
 
@@ -164,7 +180,7 @@ Only the following methods and endpoints are supported. Unknown endpoints, unsup
 /volumes/create                              POST         declared volume create
 ```
 
-A control operation also requires a matching existing container and must not target a protected service. Read-only operations on individual containers require the same ownership and inspect-mode comparison but do not require the one-off label.
+A control operation also requires a matching existing container, an allowed [command](#command-selection), and a service that is not protected. Read-only operations on individual containers require the same ownership and inspect-mode comparison but do not require the one-off label.
 
 Other Docker Compose workflows, including `up`, `down`, `exec`, `logs`, `build`, and `push`, are not supported through this socket.
 

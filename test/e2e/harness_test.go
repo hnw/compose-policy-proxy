@@ -273,13 +273,21 @@ func waitForLog(t *testing.T, p *proxyProcess, want string) {
 	t.Fatalf("proxy log never mentioned %q\nlog:\n%s", want, p.log(t))
 }
 
-func (h *harness) run(args ...string) (string, error) {
-	return h.runWithInput("", args...)
-}
-
 func (h *harness) runWithInput(stdin string, args ...string) (string, error) {
 	h.t.Helper()
-	cmd := exec.Command("docker", append([]string{"compose", "run"}, args...)...)
+	return h.composeWithInput(stdin, append([]string{"run"}, args...)...)
+}
+
+// compose runs any compose command through the proxy, for the workflows that address
+// containers Compose created rather than a new one-off container.
+func (h *harness) compose(args ...string) (string, error) {
+	h.t.Helper()
+	return h.composeWithInput("", args...)
+}
+
+func (h *harness) composeWithInput(stdin string, args ...string) (string, error) {
+	h.t.Helper()
+	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
 	cmd.Dir = h.project.dir
 	cmd.Env = withEnv(os.Environ(), "DOCKER_HOST", "unix://"+h.socket)
 	if stdin != "" {
@@ -294,7 +302,12 @@ func (h *harness) runWithInput(stdin string, args ...string) (string, error) {
 
 func (h *harness) mustRun(args ...string) string {
 	h.t.Helper()
-	out, err := h.run(args...)
+	return h.mustCompose(append([]string{"run"}, args...)...)
+}
+
+func (h *harness) mustCompose(args ...string) string {
+	h.t.Helper()
+	out, err := h.compose(args...)
 	if err != nil {
 		h.t.Fatalf("docker compose %s failed: %v\noutput:\n%s\nproxy log:\n%s",
 			strings.Join(args, " "), err, out, h.proxy.log(h.t))
@@ -329,7 +342,12 @@ func mustRunOnEngine(t *testing.T, host string, args ...string) {
 
 func (h *harness) mustDeny(args ...string) string {
 	h.t.Helper()
-	out, err := h.run(args...)
+	return h.mustDenyCompose(append([]string{"run"}, args...)...)
+}
+
+func (h *harness) mustDenyCompose(args ...string) string {
+	h.t.Helper()
+	out, err := h.compose(args...)
 	if err == nil {
 		h.t.Fatalf("docker compose %s unexpectedly succeeded\noutput:\n%s", strings.Join(args, " "), out)
 	}

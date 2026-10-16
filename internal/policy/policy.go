@@ -35,6 +35,9 @@ type Config struct {
 	// Engine is read to establish ownership of containers that already exist.
 	// Nothing in this package forwards a request to it.
 	Engine ContainerInspector
+	// AllowedCommands is the set of Compose commands to authorize, as parsed by
+	// ParseCommands. An empty set authorizes no command at all.
+	AllowedCommands Commands
 }
 
 // ContainerInspector reads a container so that its ownership can be established.
@@ -49,6 +52,7 @@ type Policy struct {
 	project   *types.Project
 	protected protectedServices
 	inspect   ContainerInspector
+	commands  Commands
 }
 
 // New builds a Policy. The protected services and seccomp profiles are resolved
@@ -62,6 +66,7 @@ func New(cfg Config) (*Policy, error) {
 		project:   project,
 		protected: resolveProtectedServices(project, cfg.DockerHost, cfg.Listen),
 		inspect:   cfg.Engine,
+		commands:  cfg.AllowedCommands,
 	}, nil
 }
 
@@ -121,6 +126,14 @@ func (p *Policy) Authorize(ctx context.Context, req *Request) (Decision, error) 
 // endpoint has already been resolved, version checked and method checked.
 func (p *Policy) decide(ctx context.Context, op operation, req *Request) (service, resource, filters string, err error) {
 	query := req.URL.Query()
+
+	// The operations only `run` performs are authorized before the request is
+	// interpreted, since nothing about their body changes what they are.
+	if runOnlyOperations[op.Endpoint] {
+		if err := p.commands.check(commandRun); err != nil {
+			return "", "", "", err
+		}
+	}
 
 	switch op.Endpoint {
 	case "/_ping", "/version", "/info":
@@ -220,12 +233,23 @@ func (p *Policy) authorizeContainer(ctx context.Context, op operation, method st
 	if err := p.protected.checkContainerOperation(service, op.Endpoint, method); err != nil {
 		return "", err
 	}
-	if !isReadOnlyOperation(op.Endpoint, method) {
-		if err := checkOneOff(insp.Config.Labels); err != nil {
-			return "", err
-		}
+	if isReadOnlyOperation(op.Endpoint, method) {
+		return service, nil
 	}
-	return service, nil
+	return service, p.checkControl(op, insp.Config.Labels)
+}
+
+// checkControl decides what may be done to a container whose ownership is established.
+// A one-off container belongs to `run`; an ordinary one belongs to the command that
+// acts on it, and to no other.
+func (p *Policy) checkControl(op operation, labels map[string]string) error {
+	if isOneOff(labels) {
+		return p.commands.check(commandRun)
+	}
+	if command, ok := serviceContainerOperations[op.Endpoint]; ok {
+		return p.commands.check(command)
+	}
+	return checkOneOff(labels)
 }
 
 // decodeRequest refuses any field the Moby types do not know, since Go would

@@ -263,10 +263,11 @@ func TestSocketDeliveredByAnyRouteIsRefusedWhateverLabelTheRequestClaims(t *test
 		},
 	}
 	p, err := New(Config{
-		Project:    project,
-		DockerHost: hostSocket,
-		Listen:     proxySocket,
-		Engine:     stubInspector{},
+		Project:         project,
+		DockerHost:      hostSocket,
+		Listen:          proxySocket,
+		Engine:          stubInspector{},
+		AllowedCommands: DefaultCommands(),
 	})
 	if err != nil {
 		t.Fatalf("build policy: %v", err)

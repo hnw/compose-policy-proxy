@@ -107,7 +107,11 @@ func (s stubInspector) InspectContainer(_ context.Context, id string) (container
 }
 
 func inspectPolicy(project *types.Project, insp container.InspectResponse) *Policy {
-	return &Policy{project: project, inspect: stubInspector{containerID: insp}}
+	return policyFor(project, insp, DefaultCommands())
+}
+
+func policyFor(project *types.Project, insp container.InspectResponse, commands Commands) *Policy {
+	return &Policy{project: project, inspect: stubInspector{containerID: insp}, commands: commands}
 }
 
 // request builds the request a client sends, as the proxy receives it. A URL
@@ -127,41 +131,46 @@ func inspect(t *testing.T, p *Policy) (Decision, error) {
 }
 
 func TestControlIsGrantedToOneOffContainersOnly(t *testing.T) {
+	// A service container reports the label as False, or not at all.
+	ordinary := func(i *container.InspectResponse) { delete(i.Config.Labels, LabelOneoff) }
+	labelledFalse := func(i *container.InspectResponse) { i.Config.Labels[LabelOneoff] = "False" }
+
 	cases := []struct {
 		name    string
 		method  string
 		path    string
-		prepare func(*container.InspectResponse, *types.Project)
+		prepare func(*container.InspectResponse)
 		want    bool // allowed
 	}{
 		{
 			name: "a one-off container", method: "POST", path: "/stop", want: true,
 		},
 		{
-			name: "an ordinary service container", method: "POST", path: "/stop",
-			prepare: func(i *container.InspectResponse, _ *types.Project) {
-				delete(i.Config.Labels, LabelOneoff)
-			},
+			name: "killing a service container", method: "POST", path: "/kill",
+			prepare: ordinary,
 		},
 		{
-			name: "a container labelled oneoff false", method: "POST", path: "/stop",
-			prepare: func(i *container.InspectResponse, _ *types.Project) {
-				i.Config.Labels[LabelOneoff] = "False"
-			},
+			name: "killing a container labelled oneoff false", method: "POST", path: "/kill",
+			prepare: labelledFalse,
 		},
 		{
-			name: "reading an ordinary service container", method: "GET", path: "/json",
-			prepare: func(i *container.InspectResponse, _ *types.Project) {
-				delete(i.Config.Labels, LabelOneoff)
-			},
-			want: true,
+			name: "removing a service container", method: "DELETE",
+			prepare: labelledFalse,
+		},
+		{
+			name: "attaching to a service container", method: "POST", path: "/attach",
+			prepare: labelledFalse,
+		},
+		{
+			name: "resizing a service container", method: "POST", path: "/resize?h=24&w=80",
+			prepare: labelledFalse,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			project, _, insp := inspectFixture()
 			if tc.prepare != nil {
-				tc.prepare(&insp, &project)
+				tc.prepare(&insp)
 			}
 			p := inspectPolicy(&project, insp)
 			_, err := p.Authorize(t.Context(), request(t, tc.method, "/v1.51/containers/"+containerID+tc.path))
