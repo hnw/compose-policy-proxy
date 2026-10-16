@@ -132,8 +132,11 @@ func TestProtectedServiceCannotBeCreated(t *testing.T) {
 	if pe.Field != "" {
 		t.Errorf("a protected service is refused as a whole, not over a field, got %q", pe.Field)
 	}
-	if !strings.Contains(pe.Detail, "mounts the Docker socket") {
-		t.Errorf("the denial must say why, got %q", pe.Detail)
+	if !strings.Contains(pe.Detail, "not allowed for a protected service") {
+		t.Errorf("the denial must name the classification, got %q", pe.Detail)
+	}
+	if strings.Contains(pe.Detail, "Docker socket") {
+		t.Errorf("the denial must not explain how the service is classified, got %q", pe.Detail)
 	}
 	if want := `service "proxy": `; !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("refusal = %q, want it to open with %q", err, want)

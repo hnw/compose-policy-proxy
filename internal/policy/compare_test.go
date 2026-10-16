@@ -929,15 +929,15 @@ func TestCreateRequiresTheLabelsOfAOneOffRun(t *testing.T) {
 	cases := []struct {
 		name    string
 		prepare func(map[string]string)
-		want    string // the label the refusal has to name
+		want    string
 	}{
 		{"no project label", func(l map[string]string) { delete(l, LabelProject) }, LabelProject},
 		{"another project's label", func(l map[string]string) { l[LabelProject] = "other" }, LabelProject},
 		{"no service label", func(l map[string]string) { delete(l, LabelService) }, LabelService},
 		{"a service the project does not declare", func(l map[string]string) { l[LabelService] = "nope" }, LabelService},
-		{"no oneoff label", func(l map[string]string) { delete(l, LabelOneoff) }, LabelOneoff},
-		{"a oneoff label set to false", func(l map[string]string) { l[LabelOneoff] = "False" }, LabelOneoff},
-		{"a oneoff label in another spelling", func(l map[string]string) { l[LabelOneoff] = "true" }, LabelOneoff},
+		{"no oneoff label", func(l map[string]string) { delete(l, LabelOneoff) }, ""},
+		{"a oneoff label set to false", func(l map[string]string) { l[LabelOneoff] = "False" }, ""},
+		{"a oneoff label in another spelling", func(l map[string]string) { l[LabelOneoff] = "true" }, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

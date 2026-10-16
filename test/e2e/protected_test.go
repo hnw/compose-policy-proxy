@@ -58,10 +58,10 @@ func TestProtectedServiceCannotBeLaunchedThroughTheProxy(t *testing.T) {
 	}
 
 	out := h.mustDeny("--rm", "-T", "policy-proxy")
-	if !strings.Contains(out, "mounts the Docker socket") {
+	if !strings.Contains(out, "container creation is not allowed for a protected service") {
 		t.Errorf("expected a protected-service refusal, got:\n%s", out)
 	}
-	h.proxy.requireLogContains(t, `detail="service mounts the Docker socket`)
+	h.proxy.requireLogContains(t, `detail="container creation is not allowed for a protected service"`)
 	h.proxy.requireLogContains(t, "service=policy-proxy")
 }
 
@@ -83,7 +83,7 @@ func TestProtectedContainerCannotBeControlledThroughTheProxy(t *testing.T) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Errorf("%s %s = %d, want 403\n%s", tc.method, tc.path, resp.StatusCode, body)
 		}
-		if !strings.Contains(body, "mounts the Docker socket") {
+		if !strings.Contains(body, "is not allowed for a protected service") {
 			t.Errorf("%s %s: expected a protected-service refusal, got:\n%s", tc.method, tc.path, body)
 		}
 	}
@@ -91,7 +91,7 @@ func TestProtectedContainerCannotBeControlledThroughTheProxy(t *testing.T) {
 	if !h.isRunning(id) {
 		t.Fatal("the protected container was stopped or removed despite the refusals")
 	}
-	h.proxy.requireLogContains(t, "detail=\"POST /containers/{id}/stop is not available for a service that mounts the Docker socket")
+	h.proxy.requireLogContains(t, "detail=\"POST /containers/{id}/stop is not allowed for a protected service\"")
 }
 
 // Wait is here because it observes through a POST. What counts is the effect on the
@@ -135,7 +135,7 @@ func TestOrdinaryContainerCanBeControlled(t *testing.T) {
 		if resp.StatusCode == http.StatusForbidden {
 			t.Errorf("%s %s was refused on an ordinary container:\n%s", tc.method, tc.path, body)
 		}
-		if strings.Contains(body, "mounts the Docker socket") {
+		if strings.Contains(body, "protected service") {
 			t.Errorf("%s %s was refused as protected:\n%s", tc.method, tc.path, body)
 		}
 	}

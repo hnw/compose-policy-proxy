@@ -221,8 +221,7 @@ func (p *Policy) authorizeContainer(ctx context.Context, op operation, method st
 	}
 	insp, err := p.inspect.InspectContainer(ctx, op.Target)
 	if err != nil {
-		return "", denyf("", "",
-			"container %q cannot be inspected, so its ownership cannot be established", op.Target)
+		return "", deny("", "", "container is not accessible through this proxy")
 	}
 	// Ownership first, so that the protected check can only narrow a decision
 	// already made from the container itself rather than from a client label.
@@ -249,7 +248,7 @@ func (p *Policy) checkControl(op operation, labels map[string]string) error {
 	if command, ok := serviceContainerOperations[op.Endpoint]; ok {
 		return p.commands.check(command)
 	}
-	return checkOneOff(labels)
+	return deny("", "", "this operation is not allowed for a service container")
 }
 
 // decodeRequest refuses any field the Moby types do not know, since Go would

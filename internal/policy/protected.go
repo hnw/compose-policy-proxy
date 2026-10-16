@@ -59,7 +59,7 @@ func (p protectedServices) checkCreate(service string) error {
 		return nil
 	}
 	return deny(service, "",
-		"service mounts the Docker socket this proxy guards, so its containers must not be created or controlled through this proxy")
+		"container creation is not allowed for a protected service")
 }
 
 // checkContainerOperation allows observation and refuses control on a protected service's
@@ -69,8 +69,7 @@ func (p protectedServices) checkContainerOperation(service, endpoint, method str
 		return nil
 	}
 	return denyf(service, "",
-		"%s %s is not available for a service that mounts the Docker socket this proxy guards; "+
-			"only read-only operations on its containers are", method, endpoint)
+		"%s %s is not allowed for a protected service", method, endpoint)
 }
 
 func (p protectedServices) names() []string {

@@ -77,7 +77,7 @@ func CheckEngineAPIVersion(engineMin, engineMax string) error {
 		return fmt.Errorf("the docker engine reports an API version %q that cannot be read: %w", engineMin, err)
 	}
 	if oldest > 0 {
-		return fmt.Errorf("docker engine requires API version %q or newer, which the %q this proxy validates cannot serve; upgrade the proxy",
+		return fmt.Errorf("docker engine requires API version %q or newer, but this proxy supports up to %q; upgrade the proxy",
 			engineMin, maxAPIVersion)
 	}
 	newest, err := compareVersion(engineMax, minAPIVersion)
@@ -85,7 +85,7 @@ func CheckEngineAPIVersion(engineMin, engineMax string) error {
 		return fmt.Errorf("the docker engine reports an API version %q that cannot be read: %w", engineMax, err)
 	}
 	if newest < 0 {
-		return fmt.Errorf("docker engine serves up to API version %q, older than the %q this proxy needs; upgrade the engine",
+		return fmt.Errorf("docker engine supports API versions up to %q, but this proxy requires at least %q; upgrade the engine",
 			engineMax, minAPIVersion)
 	}
 	return nil
@@ -156,7 +156,7 @@ func (o operation) checkVersion() error {
 	}
 	if cmp > 0 {
 		return denyf("", "",
-			"docker API version %q is newer than the %q this proxy validates; the proxy must be upgraded",
+			"docker API version %q exceeds this proxy's supported maximum %q; upgrade the proxy",
 			o.Version, maxAPIVersion)
 	}
 	if cmp, err := compareVersion(o.Version, minAPIVersion); err == nil && cmp < 0 {

@@ -188,8 +188,7 @@ func TestRefusedRequests(t *testing.T) {
 			body: `{"Image":"alpine:3.20","Labels":{"com.docker.compose.project":"demo",` +
 				`"com.docker.compose.service":"app"},"HostConfig":{"NetworkMode":"demo_frontend"},
 				"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`,
-			field:  "com.docker.compose.oneoff",
-			detail: `only one-off containers are allowed (expected "True"`,
+			detail: `container creation is limited to one-off containers`,
 		},
 		{
 			name: "a field the compose file does not declare", method: "POST",
@@ -209,7 +208,7 @@ func TestRefusedRequests(t *testing.T) {
 		},
 		{
 			name: "a container of another project", method: "GET", path: "/v1.51/containers/other/json",
-			detail: `container "other" cannot be inspected, so its ownership cannot be established`,
+			detail: `container is not accessible through this proxy`,
 		},
 		{
 			name: "an image the project does not declare", method: "GET", path: "/v1.51/images/busybox/json",

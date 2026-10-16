@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -184,9 +185,13 @@ func TestControlIsGrantedToOneOffContainersOnly(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s %s was allowed, or failed without a policy refusal: %v", tc.method, tc.path, err)
 			}
-			if pe.Field != LabelOneoff {
-				t.Fatalf("%s %s was refused on %q, want the one-off label (%s)",
+			if pe.Field != "" {
+				t.Fatalf("%s %s was refused over field %q, want a refusal about the container kind (%s)",
 					tc.method, tc.path, pe.Field, pe.Detail)
+			}
+			if want := "this operation is not allowed for a service container"; !strings.Contains(pe.Detail, want) {
+				t.Errorf("%s %s was refused as %q, want a refusal saying %q",
+					tc.method, tc.path, pe.Detail, want)
 			}
 		})
 	}
@@ -211,8 +216,15 @@ func TestOwnershipDeniesForeignProject(t *testing.T) {
 	insp.Config.Labels[LabelProject] = "another-project"
 
 	_, err := inspect(t, inspectPolicy(&project, insp))
-	if pe, ok := Inspect(err); !ok || pe.Field != LabelProject {
-		t.Fatalf("expected the denial to name the project label, got %v", err)
+	pe, ok := Inspect(err)
+	if !ok {
+		t.Fatalf("expected a denial, got %v", err)
+	}
+	if want := "container is not accessible through this proxy"; !strings.Contains(pe.Detail, want) {
+		t.Errorf("denial = %q, want it to say %q", pe.Detail, want)
+	}
+	if strings.Contains(err.Error(), "another-project") {
+		t.Errorf("the denial discloses the project the Engine reported: %v", err)
 	}
 }
 

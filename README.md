@@ -1,12 +1,8 @@
 # compose-policy-proxy
 
-A Docker API proxy that restricts container operations to those permitted by a Docker Compose project.
+Some applications running in containers need to launch other containers, such as bots or CI runners executing command-line tools. Docker-outside-of-Docker (DooD) makes this possible by giving the application access to the host Docker socket. However, this also grants broad control over the Docker Engine.
 
-Docker-outside-of-Docker (DooD) lets a container launch sibling containers, but mounting the host Docker socket gives it broad control over the Docker Engine.
-
-**compose-policy-proxy** provides a restricted Docker socket instead. It uses an existing `compose.yaml` as the policy, allowing applications to launch containers without granting unrestricted Docker access.
-
-It is designed for bots, automation services, and other applications that execute predefined containerized tools.
+`compose-policy-proxy` provides a restricted Docker socket instead. It uses an existing `compose.yaml` as its policy, allowing applications to run declared services without unrestricted Docker access—even if the application container is compromised.
 
 ## How it works
 
@@ -38,9 +34,7 @@ services:
     working_dir: /data
 ```
 
-The application can run the `pandoc` service with different commands and arguments. It cannot use another image, mount additional host directories, or enable privileged mode unless the Compose configuration permits it.
-
-**The Compose project defines what is allowed.** The proxy restricts the container's execution environment, not the commands it runs.
+The application can run the `pandoc` service with different commands and arguments, but cannot use another image, add undeclared mounts, or enable privileged mode. The proxy enforces the service's security-sensitive configuration, not the behavior of the command it runs.
 
 ## Quick start
 
@@ -78,7 +72,7 @@ See the [example README](examples/quickstart/README.md) for denied-request examp
 
 The proxy supports the Compose commands `run`, `start`, and `stop`.
 
-`docker compose run` creates a one-off container and controls it. `docker compose start` and `docker compose stop` change the state of service containers that already exist. Regular service containers cannot be created, killed, removed, attached to, or resized through the restricted socket, so a service a client needs must be created on the host, and `start` and `stop` act on it once it exists.
+`run` creates and controls one-off containers. `start` and `stop` operate on existing service containers, which must be created outside the proxy. Other control operations on regular service containers are not permitted.
 
 `--allow-command` narrows which of the three commands are available. It defaults to all of them:
 
@@ -86,7 +80,7 @@ The proxy supports the Compose commands `run`, `start`, and `stop`.
 # All three commands (default)
 compose-policy-proxy
 
-# One-off containers only, as before
+# Allow only one-off containers
 compose-policy-proxy --allow-command=run
 
 # Starting and stopping existing services, without creating one-off containers
@@ -131,9 +125,6 @@ The Compose project is loaded at startup. Restart the proxy after changing its c
 | `--allow-command` | `run,start,stop` | Compose commands to allow |
 | `--log-format` | `text` | `text` or `json` |
 | `--log-level` | `info` | Logging verbosity |
-
-Use `--help` for CLI options. On `/_ping` and `/version` the proxy reports the newest Docker API version it validates, so Docker CLI and Compose negotiate down to it without any environment variable.
-A request that names a newer version in its path is still refused.
 
 See [examples/quickstart](examples/quickstart) for a complete deployment.
 

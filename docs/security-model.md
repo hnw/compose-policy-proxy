@@ -2,9 +2,15 @@
 
 `compose-policy-proxy` uses the resolved Compose project as the authority for Docker API access through its restricted socket.
 
-Any client with access to the socket is treated as untrusted. The proxy prevents it from acquiring host access, privileges, isolation settings, or Docker control-plane authority beyond what the Compose project permits.
+## Threat model
+
+Any client with access to the socket is treated as untrusted, and the proxy assumes that such a client may be compromised. It may issue arbitrary Docker API requests, read the Compose configuration, and discover the proxy's implementation. The proxy prevents it from acquiring host access, privileges, isolation settings, or Docker control-plane authority beyond what the Compose project permits.
+
+The Compose configuration, the proxy process, and the upstream Docker socket must remain outside the attacker's control. The proxy does not protect against an attacker who can modify its policy or access the upstream Docker Engine directly.
 
 The Compose project itself is trusted. If it grants a dangerous capability, the proxy does not revoke it. Within an authorized execution environment, clients may override commands, arguments, and environment variables.
+
+Security does not depend on keeping the proxy's implementation or authorization rules secret.
 
 ## Security boundaries
 
@@ -51,6 +57,16 @@ See [policy.md](policy.md) for the comparison rules and `internal/policy/invento
 Requests are denied unless an explicit rule authorizes them. Unknown endpoints, unsupported API versions, and operations without an authorization rule are refused. List requests must also be scoped to authorized resources.
 
 Request bodies are decoded strictly, so unknown fields are rejected. The field inventory tests require every field in the Docker request structures used by the policy to be classified. A Moby dependency update that introduces an unclassified field therefore fails tests until the field is reviewed.
+
+### Denial messages
+
+Denial messages balance diagnostic usefulness with unnecessary information disclosure.
+
+Configuration mismatches may report the relevant field and the expected and actual values. This helps legitimate users diagnose failures and report them to administrators.
+
+A protected-service denial identifies the service as protected without explaining the classification criteria. Other denial messages should not unnecessarily reveal information about resources outside the authorized Compose project.
+
+These restrictions reduce unnecessary information disclosure but are not relied upon for authorization security.
 
 ## Container creation and control
 

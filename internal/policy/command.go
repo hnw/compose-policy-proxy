@@ -59,12 +59,7 @@ func (c Commands) check(command string) error {
 	if slices.Contains(c, command) {
 		return nil
 	}
-	permitted := "none"
-	if len(c) > 0 {
-		permitted = strings.Join(c, ", ")
-	}
-	return denyf("", "", "docker compose %s is not available through this proxy, "+
-		"which is configured to allow %s", command, permitted)
+	return denyf("", "", "docker compose %s is not available through this proxy", command)
 }
 
 // runOnlyOperations are the operations `docker compose run` performs that no other

@@ -55,9 +55,7 @@ func (p *Policy) matchCreate(req *container.CreateRequest) (string, error) {
 // than proving where the request came from.
 func checkOneOff(labels map[string]string) error {
 	if !isOneOff(labels) {
-		return denyf("", LabelOneoff,
-			"only one-off containers are allowed (expected %q, found %q)",
-			oneoffLabelValue, labels[LabelOneoff])
+		return deny("", "", "container creation is limited to one-off containers")
 	}
 	return nil
 }
@@ -72,15 +70,14 @@ func (p *Policy) matchExistingContainer(insp container.InspectResponse) (string,
 	if insp.Config == nil {
 		return "", deny("", "container", "inspect result has no config")
 	}
-	if got := insp.Config.Labels[LabelProject]; got != p.project.Name {
-		return "", denyf("", LabelProject,
-			"container belongs to project %q, this proxy serves project %q", got, p.project.Name)
+	if insp.Config.Labels[LabelProject] != p.project.Name {
+		return "", deny("", "", "container is not accessible through this proxy")
 	}
 	serviceName := insp.Config.Labels[LabelService]
 	service, err := compose.Service(p.project, serviceName)
 	if err != nil {
-		return "", denyf("", LabelService,
-			"container names service %q, which project %q does not declare", serviceName, p.project.Name)
+		return "", deny("", LabelService,
+			"container names a service this project does not declare")
 	}
 	if err := p.compareContainer(service, insp); err != nil {
 		return "", err

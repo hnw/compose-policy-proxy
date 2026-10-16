@@ -319,7 +319,7 @@ func TestSocketDeliveredByAnyRouteIsRefusedWhateverLabelTheRequestClaims(t *test
 			if !ok || pe.Service != claim {
 				t.Fatalf("a request carrying the Docker socket was authorized as %+v: %v", decision, err)
 			}
-			if !strings.Contains(pe.Detail, "mounts the Docker socket") {
+			if !strings.Contains(pe.Detail, "not allowed for a protected service") {
 				t.Fatalf("the refusal must be the protected-service one, got %q", pe.Detail)
 			}
 		})
