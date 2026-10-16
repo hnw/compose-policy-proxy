@@ -133,7 +133,7 @@ Security-sensitive examples are refused rather than guessed:
 | `HostConfig.Cgroup` | refused because it directly names a cgroup the proxy cannot resolve |
 | `HostConfig.ContainerIDFile` | refused because its API contract names a host path for daemon output |
 | `HostConfig.PublishAllPorts` | refused because it creates undeclared host listeners |
-| `Config.Volumes` | refused because it declares an anonymous mount outside the canonical mount representations the policy compares |
+| `Config.Volumes` | refused on create because it declares an anonymous mount outside the canonical mount representations the policy compares |
 
 Host-dependent values that Compose can express, such as `StorageOpt`, `VolumeDriver`, and runtime `Annotations`, are exact-matched instead of interpreted.
 
@@ -149,7 +149,9 @@ Existing-container operations require both Compose ownership labels and matching
 
 The proxy reconstructs a create-like request from the Engine inspect result and reuses the same comparison logic in inspect mode.
 
-Inspect mode skips only checks that cannot be reconstructed reliably because the daemon fills or normalizes the value after creation. Security-sensitive differences that remain observable continue to cause denial.
+Inspect mode skips only checks that cannot be reconstructed reliably because the daemon fills or normalizes the value after creation: an entrypoint, user or volume declaration the image contributed, the runtime, the namespaces, the masked and read-only paths, and daemon-added security options. An explicitly declared entrypoint, including `entrypoint: []`, is still compared. A user is compared when Compose declares a non-empty value. Security-sensitive differences that remain observable continue to cause denial.
+
+On inspect, the endpoint the Engine creates for a pinned `network_mode` is ignored: an inspect result reports one for `network_mode: none` or `network_mode: host`, while a create request never carries it. The mode itself is still compared, and any further attached network is still refused.
 
 The request's Compose service label is a hint for create-time service matching, not an authority. Existing-container ownership requires the project label, a declared service, and a security-state match.
 

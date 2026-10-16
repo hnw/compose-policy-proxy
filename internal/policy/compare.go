@@ -53,8 +53,8 @@ func compareService(
 	comparisons := []func() error{
 		func() error { return compareDockerOnlyFields(service, req, m) },
 		func() error { return compareImage(project, service, req) },
-		func() error { return compareEntrypoint(service, req) },
-		func() error { return equal(service.Name, "Config.User", service.User, req.Config.User) },
+		func() error { return compareEntrypoint(service, req, m) },
+		func() error { return compareUser(service, req, m) },
 		func() error {
 			return equalSet(service.Name, "HostConfig.GroupAdd", service.GroupAdd, req.HostConfig.GroupAdd)
 		},
@@ -84,7 +84,7 @@ func compareService(
 		func() error { return compareHostDependentFields(service, req) },
 		func() error { return compareNetworkDisabled(service, req) },
 		func() error { return compareMounts(project, service, req) },
-		func() error { return compareNetworks(project, service, req) },
+		func() error { return compareNetworks(project, service, req, m) },
 		func() error { return comparePorts(service, req) },
 	}
 	for _, cmp := range comparisons {
@@ -107,16 +107,16 @@ func compareDockerOnlyFields(service types.ServiceConfig, req *container.CreateR
 		return deny(service.Name, "HostConfig.PublishAllPorts",
 			"compose does not allow publishing all ports")
 	}
-	// Config.Volumes declares anonymous volumes, so it is a mount declaration
-	// reached outside the canonical mount set rather than through it.
-	if len(req.Config.Volumes) != 0 {
-		return deny(service.Name, "Config.Volumes",
-			"an anonymous volume is declared outside the mount entries the policy compares")
-	}
-
 	// The next group is create-path only, since the daemon substitutes or
 	// normalises each of these when a request omits it.
 	if m == modeCreate {
+		// Config.Volumes declares anonymous volumes, so it is a mount declaration
+		// reached outside the canonical mount set rather than through it. The
+		// daemon completes it from the VOLUME declarations of the image.
+		if len(req.Config.Volumes) != 0 {
+			return deny(service.Name, "Config.Volumes",
+				"an anonymous volume is declared outside the mount entries the policy compares")
+		}
 		// Compose empties these for security_opt "systempaths=unconfined", so a
 		// value here was invented by the client.
 		if len(hc.MaskedPaths) != 0 {
@@ -143,7 +143,13 @@ func compareImage(project *types.Project, service types.ServiceConfig, req *cont
 
 // compareEntrypoint compares the entrypoint exactly. A command override is allowed
 // because its caller already holds the container's grants.
-func compareEntrypoint(service types.ServiceConfig, req *container.CreateRequest) error {
+func compareEntrypoint(service types.ServiceConfig, req *container.CreateRequest, m mode) error {
+	// The daemon fills an omitted entrypoint in from the image, and an inspect
+	// result cannot tell that apart from one the client asked for. An explicit
+	// `entrypoint: []` is not omitted, so it stays compared.
+	if m == modeInspect && service.Entrypoint == nil {
+		return nil
+	}
 	var want []string
 	if service.Entrypoint != nil {
 		want = []string(service.Entrypoint)
@@ -154,6 +160,15 @@ func compareEntrypoint(service types.ServiceConfig, req *container.CreateRequest
 			"compose declares entrypoint %v, found %v", want, got)
 	}
 	return nil
+}
+
+// compareUser compares the user exactly, except on the inspect path when Compose
+// declares none, since the daemon then completed the value from the image.
+func compareUser(service types.ServiceConfig, req *container.CreateRequest, m mode) error {
+	if m == modeInspect && service.User == "" {
+		return nil
+	}
+	return equal(service.Name, "Config.User", service.User, req.Config.User)
 }
 
 // equal refuses a request whose value for field is not the one Compose declares.
@@ -718,7 +733,7 @@ func sameBindings(want, got []nat.PortBinding) bool {
 
 // compareNetworks checks NetworkMode and the set of endpoint names. Endpoint metadata
 // stays inside the network the project already attached the container to.
-func compareNetworks(project *types.Project, service types.ServiceConfig, req *container.CreateRequest) error {
+func compareNetworks(project *types.Project, service types.ServiceConfig, req *container.CreateRequest, m mode) error {
 	endpoints := map[string]bool{}
 	if req.NetworkingConfig != nil {
 		for name := range req.NetworkingConfig.EndpointsConfig {
@@ -733,6 +748,12 @@ func compareNetworks(project *types.Project, service types.ServiceConfig, req *c
 		if service.NetworkMode != gotMode {
 			return denyf(service.Name, "HostConfig.NetworkMode",
 				"compose declares network_mode %q, found %q", service.NetworkMode, gotMode)
+		}
+		// The Engine gives the container an endpoint for the mode it was given, so an
+		// inspect result carries one the create request did not. The mode is already
+		// required to be the declared one, so that endpoint reaches nothing else.
+		if m == modeInspect {
+			delete(endpoints, service.NetworkMode)
 		}
 		if len(endpoints) != 0 {
 			return denyf(service.Name, "NetworkingConfig.EndpointsConfig",

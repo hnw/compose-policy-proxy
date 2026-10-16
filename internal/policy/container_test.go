@@ -206,6 +206,27 @@ func TestOwnershipToleratesDaemonDefaults(t *testing.T) {
 			svc.Hostname = ""
 			i.Config.Hostname = "a1b2c3d4e5f6"
 		},
+		"entrypoint from the image": func(i *container.InspectResponse, svc *types.ServiceConfig) {
+			svc.Entrypoint = nil
+			i.Config.Entrypoint = []string{"/ko-app/entrypoint"}
+		},
+		"user from the image": func(i *container.InspectResponse, svc *types.ServiceConfig) {
+			svc.User = ""
+			i.Config.User = "0:0"
+		},
+		"volume declared by the image": func(i *container.InspectResponse, _ *types.ServiceConfig) {
+			i.Config.Volumes = map[string]struct{}{"/var/lib/data": {}}
+		},
+		"endpoint of the pinned network mode": func(i *container.InspectResponse, svc *types.ServiceConfig) {
+			svc.NetworkMode = "none"
+			i.HostConfig.NetworkMode = "none"
+			i.NetworkSettings.Networks = map[string]*network.EndpointSettings{"none": {}}
+		},
+		"endpoint of the host network mode": func(i *container.InspectResponse, svc *types.ServiceConfig) {
+			svc.NetworkMode = "host"
+			i.HostConfig.NetworkMode = "host"
+			i.NetworkSettings.Networks = map[string]*network.EndpointSettings{"host": {}}
+		},
 		"default working directory": func(i *container.InspectResponse, svc *types.ServiceConfig) {
 			svc.WorkingDir = ""
 			i.Config.WorkingDir = "/"
@@ -236,6 +257,11 @@ func TestOwnershipStillRejectsRealDifferences(t *testing.T) {
 		"different user": func(i *container.InspectResponse, _ *types.ServiceConfig) {
 			i.Config.User = "root"
 		},
+		"different entrypoint": func(i *container.InspectResponse, svc *types.ServiceConfig) {
+			// Compose declares an entrypoint of its own, so the comparison applies.
+			svc.Entrypoint = []string{"/entrypoint.sh"}
+			i.Config.Entrypoint = []string{"/other.sh"}
+		},
 		"different capabilities": func(i *container.InspectResponse, _ *types.ServiceConfig) {
 			i.HostConfig.CapAdd = append(i.HostConfig.CapAdd, "CAP_SYS_ADMIN")
 		},
@@ -247,6 +273,14 @@ func TestOwnershipStillRejectsRealDifferences(t *testing.T) {
 		},
 		"extra mount": func(i *container.InspectResponse, _ *types.ServiceConfig) {
 			i.HostConfig.Binds = append(i.HostConfig.Binds, "/:/host:rw")
+		},
+		"network attached beside a pinned mode": func(i *container.InspectResponse, svc *types.ServiceConfig) {
+			svc.NetworkMode = "none"
+			i.HostConfig.NetworkMode = "none"
+			i.NetworkSettings.Networks = map[string]*network.EndpointSettings{
+				"none":           {},
+				"demo_elsewhere": {},
+			}
 		},
 		"different image": func(i *container.InspectResponse, _ *types.ServiceConfig) {
 			i.Config.Image = "alpine:latest"
