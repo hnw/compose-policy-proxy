@@ -19,7 +19,7 @@ The host starts `policy-proxy` and `app`. The `tool` service is launched on dema
 From this directory, on the host:
 
 ```console
-docker compose up -d --build
+docker compose up -d
 docker compose exec app sh
 ```
 
@@ -94,8 +94,6 @@ Both use the same Compose project. The proxy reads its configuration and uses th
 
 The `tool` service has the `tools` profile, so it is not started by the host's `docker compose up -d`. It can still be launched explicitly using `docker compose run tool`.
 
-The `app` image is built from `app.Dockerfile`, which adds the Compose plugin to the Docker CLI image. The proxy itself uses a prebuilt image from GHCR.
-
 In a real deployment, replace `app` with your CI runner, bot, or automation service, and define the containerized tools it can launch in `compose.yaml`.
 
 ## Troubleshooting
@@ -107,7 +105,7 @@ The proxy expects the host Docker socket at `/var/run/docker.sock`.
 If the Docker daemon uses another socket path, set `DOCKER_SOCK` when starting the project:
 
 ```console
-DOCKER_SOCK=/path/to/docker.sock docker compose up -d --build
+DOCKER_SOCK=/path/to/docker.sock docker compose up -d
 ```
 
 On VM-backed Docker environments such as Colima or Lima, bind mount source paths are resolved by the Docker daemon, not by the macOS host.

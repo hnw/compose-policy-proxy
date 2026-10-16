@@ -13,10 +13,7 @@ services:
 
   # Represents a CI runner or bot with restricted Docker access.
   app:
-    image: compose-policy-proxy-example-app
-    build:
-      context: .
-      dockerfile: app.Dockerfile
+    image: docker:29-cli
     working_dir: ${PWD}
     entrypoint: []
     environment:

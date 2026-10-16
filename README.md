@@ -50,7 +50,7 @@ Try the [working example](examples/quickstart):
 git clone https://github.com/hnw/compose-policy-proxy.git
 cd compose-policy-proxy/examples/quickstart
 
-docker compose up -d --build
+docker compose up -d
 docker compose exec app sh
 ```
 
