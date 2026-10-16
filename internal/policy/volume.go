@@ -53,7 +53,8 @@ func matchVolumeCreate(project *types.Project, req volume.CreateOptions) (string
 		return "", denyf("", "ClusterVolumeSpec", "compose never creates a cluster volume")
 	}
 
-	wantLabels := copyLabels(cfg.Labels)
+	wantLabels := make(map[string]string, len(cfg.Labels)+2)
+	maps.Copy(wantLabels, cfg.Labels)
 	wantLabels[LabelProject] = project.Name
 	wantLabels[LabelVolume] = key
 	if mismatched := mismatchedLabels(wantLabels, req.Labels); len(mismatched) != 0 {

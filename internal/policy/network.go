@@ -85,7 +85,8 @@ func matchNetworkCreate(project *types.Project, req network.CreateRequest) (stri
 
 	// Compose adds management labels of its own, and the config hash and client
 	// version differ per run, so only the labels tying the resource to a project count.
-	wantLabels := copyLabels(cfg.Labels)
+	wantLabels := make(map[string]string, len(cfg.Labels)+2)
+	maps.Copy(wantLabels, cfg.Labels)
 	wantLabels[LabelProject] = project.Name
 	wantLabels[LabelNetwork] = key
 	if mismatched := mismatchedLabels(wantLabels, opts.Labels); len(mismatched) != 0 {
@@ -97,14 +98,6 @@ func matchNetworkCreate(project *types.Project, req network.CreateRequest) (stri
 		return "", err
 	}
 	return key, nil
-}
-
-func copyLabels(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
 }
 
 // builtinIPAMDriver is the IPAM driver every Engine registers itself, under this
