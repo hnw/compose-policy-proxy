@@ -9,11 +9,19 @@ import (
 )
 
 func TestStreamingEndpoint(t *testing.T) {
-	if !isStreamingEndpoint("/containers/{id}/attach") {
+	if !isStreamingRequest("/containers/{id}/attach", nil) {
 		t.Error("attach must be forwarded as a hijacked stream")
 	}
+	if !isStreamingRequest("/exec/{id}/start", []byte(`{"Detach":false,"Tty":true}`)) {
+		t.Error("an attached exec start must be forwarded as a hijacked stream")
+	}
+	// A detached start answers with an empty body, so streaming it would leave the
+	// connection open for a response that has already ended.
+	if isStreamingRequest("/exec/{id}/start", []byte(`{"Detach":true,"Tty":false}`)) {
+		t.Error("a detached exec start is not a hijacked stream")
+	}
 	for _, endpoint := range []string{"/containers/{id}/json", "/containers/create", "/containers/{id}/wait"} {
-		if isStreamingEndpoint(endpoint) {
+		if isStreamingRequest(endpoint, nil) {
 			t.Errorf("%s is not a hijacked stream", endpoint)
 		}
 	}

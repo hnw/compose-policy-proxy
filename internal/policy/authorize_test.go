@@ -51,6 +51,10 @@ func (s inspectStub) InspectContainer(_ context.Context, id string) (container.I
 	return insp, nil
 }
 
+func (s inspectStub) InspectExec(_ context.Context, _ string) (policy.ExecInfo, error) {
+	return policy.ExecInfo{}, errors.New("no such exec instance")
+}
+
 // appContainer is the Engine's report of the container `docker compose run app`
 // would have created.
 func appContainer() container.InspectResponse {

@@ -179,6 +179,32 @@ var endpointFields = map[string]fieldDecision{
 	"DNSNames":            forwarded("assigned by the daemon"),
 }
 
+// execOptionsFields classifies container.ExecOptions. An exec runs inside a container
+// the proxy has already judged, so most of it is the client's to choose: what it asks
+// for is a command, which the container's own privilege is then applied to.
+var execOptionsFields = map[string]fieldDecision{
+	"User":       refused("an exec may not run as a user of its own"),
+	"Privileged": refused("an exec adds no privilege of its own to the container's"),
+
+	"Tty":          compared("the terminal the exec was created with decides how its output is framed"),
+	"AttachStdin":  forwarded("terminal attachment"),
+	"AttachStdout": forwarded("terminal attachment"),
+	"AttachStderr": forwarded("terminal attachment"),
+	"ConsoleSize":  forwarded("initial terminal geometry"),
+	"DetachKeys":   forwarded("terminal detach sequence"),
+	"Cmd":          forwarded("the command an exec runs is the point of docker compose exec"),
+	"Env":          forwarded("environment"),
+	"WorkingDir":   forwarded("container-local layout"),
+	"Detach":       forwarded("the daemon ignores it; the start decides whether the exec is attached"),
+}
+
+// execStartOptionsFields classifies container.ExecStartOptions.
+var execStartOptionsFields = map[string]fieldDecision{
+	"Tty":         compared("a start may only ask for the terminal the exec was created with"),
+	"Detach":      forwarded("a detached start answers with a body rather than a stream"),
+	"ConsoleSize": forwarded("initial terminal geometry"),
+}
+
 // TestEveryRequestFieldIsClassified checks the inventory against the Moby types both
 // ways. A bump adds a field with no decision and leaves one behind for a lost field.
 func TestEveryRequestFieldIsClassified(t *testing.T) {
@@ -187,12 +213,16 @@ func TestEveryRequestFieldIsClassified(t *testing.T) {
 		"HostConfig":       hostConfigFields,
 		"Resources":        resourcesFields,
 		"EndpointSettings": endpointFields,
+		"ExecOptions":      execOptionsFields,
+		"ExecStartOptions": execStartOptionsFields,
 	}
 	declared := map[string]map[string]bool{
 		"Config":           declaredFields(reflect.TypeOf(container.Config{})),
 		"HostConfig":       declaredFields(reflect.TypeOf(container.HostConfig{})),
 		"Resources":        declaredFields(reflect.TypeOf(container.Resources{})),
 		"EndpointSettings": declaredFields(reflect.TypeOf(network.EndpointSettings{})),
+		"ExecOptions":      declaredFields(reflect.TypeOf(container.ExecOptions{})),
+		"ExecStartOptions": declaredFields(reflect.TypeOf(container.ExecStartOptions{})),
 	}
 
 	for typeName, table := range tables {

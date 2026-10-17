@@ -95,8 +95,9 @@ func inspectOf(
 	return insp
 }
 
-// stubInspector is an Engine that knows a fixed set of containers. Any other
-// identifier is unknown to it, which is what an unreadable container looks like.
+// stubInspector is an Engine that knows a fixed set of containers and no exec
+// instances. Any other identifier is unknown to it, which is what an unreadable
+// resource looks like.
 type stubInspector map[string]container.InspectResponse
 
 func (s stubInspector) InspectContainer(_ context.Context, id string) (container.InspectResponse, error) {
@@ -105,6 +106,10 @@ func (s stubInspector) InspectContainer(_ context.Context, id string) (container
 		return container.InspectResponse{}, errors.New("no such container")
 	}
 	return insp, nil
+}
+
+func (s stubInspector) InspectExec(_ context.Context, _ string) (ExecInfo, error) {
+	return ExecInfo{}, errors.New("no such exec instance")
 }
 
 func inspectPolicy(project *types.Project, insp container.InspectResponse) *Policy {

@@ -23,6 +23,7 @@ var allowlist = map[string][]string{
 	"/containers/{id}":         {"DELETE", "GET"},
 	"/containers/{id}/json":    {"GET"},
 	"/containers/{id}/attach":  {"POST"},
+	"/containers/{id}/exec":    {"POST"},
 	"/containers/{id}/start":   {"POST"},
 	"/containers/{id}/wait":    {"POST"},
 	"/containers/{id}/stop":    {"POST"},
@@ -30,6 +31,12 @@ var allowlist = map[string][]string{
 	"/containers/{id}/kill":    {"POST"},
 	"/containers/{id}/resize":  {"POST"},
 	logsEndpoint:               {"GET"},
+
+	// Exec instances. An exec id names no container, so every one of these is
+	// authorized against the container the Engine reports for that id.
+	"/exec/{id}/json":   {"GET"},
+	execStartEndpoint:   {"POST"},
+	"/exec/{id}/resize": {"POST"},
 
 	// Images. Inspect and pull, both restricted to an image the project declares.
 	"/images/create":      {"POST"},
@@ -224,13 +231,14 @@ func splitMinor(v string) (major, minor int, err error) {
 // secrets, so it is decided by the `logs` command for every kind of container.
 const logsEndpoint = "/containers/{id}/logs"
 
-// readOnlyOperations are the only container operations allowed on a protected
+// readOnlyOperations are the only container and exec operations allowed on a protected
 // service. What counts is the effect on the container, not the HTTP method.
 var readOnlyOperations = map[string]bool{
 	"/containers/json GET":       true, // listing observes
 	"/containers/{id} GET":       true, // reading container state observes
 	"/containers/{id}/json GET":  true, // inspect observes
 	"/containers/{id}/wait POST": true, // waiting changes nothing
+	"/exec/{id}/json GET":        true, // reading what an exec is doing observes rather than acts
 }
 
 func isReadOnlyOperation(endpoint, method string) bool {

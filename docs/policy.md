@@ -8,7 +8,7 @@ The field inventory in `internal/policy/inventory_test.go` records whether each 
 
 ## Command selection
 
-`--allow-command` selects which Compose commands the proxy authorizes. It defaults to every supported command, `run,start,stop,restart,pull,logs`, and a value given on the command line replaces that default rather than adding to it.
+`--allow-command` selects which Compose commands the proxy authorizes. It defaults to every supported command, `run,start,stop,restart,pull,logs,exec`, and a value given on the command line replaces that default rather than adding to it.
 
 | Command | Docker API operations it authorizes |
 | --- | --- |
@@ -18,6 +18,7 @@ The field inventory in `internal/policy/inventory_test.go` records whether each 
 | `restart` | `POST /containers/{id}/restart` on a service container of the project |
 | `pull` | `POST /images/create` for an image the project declares |
 | `logs` | `GET /containers/{id}/logs` on a service container or one-off container of the project, and the `GET /events` stream that `docker compose logs --follow` opens |
+| `exec` | exec create, start, and TTY resize on a container of the project; reading the exit status of that exec needs no command, as any other read-only operation does |
 
 An unsupported name is refused at startup, a repeated name changes nothing, and an empty list authorizes no command at all.
 
@@ -55,7 +56,7 @@ For an operation targeting an existing container, the proxy inspects it through 
 
 The proxy does not trust labels supplied with the operation. It uses the labels and settings reported by the Engine. It keeps no container ownership database, so the same checks apply after a proxy restart.
 
-Read-only operations are available for matching service containers, including normal service containers. Control operations require `com.docker.compose.oneoff=True` in the inspect result, except that a normal service container may be started, stopped, and restarted by the [commands](#command-selection) of the same name. Control operations are denied for protected services. The [endpoint list](#docker-api-allowlist) identifies the operations in each group.
+Read-only operations are available for matching service containers, including normal service containers. Control operations require `com.docker.compose.oneoff=True` in the inspect result, except that a normal service container may be started, stopped, and restarted by the [commands](#command-selection) of the same name, or [executed in](#exec). Control operations are denied for protected services. The [endpoint list](#docker-api-allowlist) identifies the operations in each group.
 
 Reading a container's logs is not among the read-only operations: it is decided by the `logs` command for both service containers and one-off containers, and a protected service's container is refused.
 
@@ -80,6 +81,36 @@ Inspect authorization does not prove that every field of the original create req
 A service whose resolved mounts give it direct access to the upstream Docker socket is protected, as defined in [security-model.md](security-model.md). Its containers cannot be created or controlled through the proxy, even when their configuration matches Compose. Read-only operations remain available.
 
 The service is identified before this restriction is applied. Naming a different service in a create request does not bypass it, because the request must match the named service's configuration.
+
+## Exec
+
+`docker compose exec` can execute arbitrary commands, with custom environment and working directory, in an existing project container without increasing its privileges.
+
+### Creating an exec
+
+`POST /containers/{id}/exec` requires an owned, non-protected container whose inspected configuration matches Compose. Both regular service containers and one-off containers are allowed. The exec request has these additional constraints:
+
+| Field | Rule |
+| --- | --- |
+| `Privileged` | refuse `true`; an exec adds no privilege of its own to the container's |
+| `User` | refuse any non-empty value, so that the exec runs as the container's own user |
+| `Cmd`, `Env`, `WorkingDir`, `Tty`, `AttachStdin`, `AttachStdout`, `AttachStderr`, `DetachKeys`, `ConsoleSize` | forwarded |
+
+Unknown fields in the exec creation request are rejected.
+
+### Operating on an exec
+
+For `/exec/{id}/start`, `/exec/{id}/resize`, and `/exec/{id}/json`, the proxy uses Engine exec inspect to identify the containing container and applies [existing-container rules](#existing-containers). No exec ownership state is stored in the proxy, including for exec instances created outside it.
+
+Starting or resizing additionally requires:
+
+- `exec` permission;
+- a process configuration in the Engine's answer, since an answer without one, or without the privilege in it, cannot be judged on;
+- `Privileged` reported as false;
+- a reported user exactly matching the container's configured user;
+- for a start, a `Tty` that matches the terminal the exec was created with.
+
+Reading an exec is a read-only operation: it requires ownership but no command, and is refused for a protected service's container.
 
 ## Container configuration
 
@@ -182,12 +213,17 @@ Only the following methods and endpoints are supported. Unknown endpoints, unsup
 /containers/{id}/json                        GET          read-only
 /containers/{id}/wait                        POST         read-only
 /containers/{id}/attach                      POST         one-off control
+/containers/{id}/exec                        POST         `exec` of an owned container
 /containers/{id}/start                       POST         one-off control, or `start` of a service container
 /containers/{id}/stop                        POST         one-off control, or `stop` of a service container
 /containers/{id}/restart                     POST         one-off control, or `restart` of a service container
 /containers/{id}/kill                        POST         one-off control
 /containers/{id}/resize                      POST         one-off control
 /containers/{id}/logs                        GET          `logs` of any owned container
+
+/exec/{id}/json                              GET          read-only
+/exec/{id}/start                             POST         `exec`, bidirectional stream unless detached
+/exec/{id}/resize                            POST         `exec`
 
 /images/create                               POST         declared image pull, by `pull` or `run`
 /images/{name}/json                          GET          declared image inspect
@@ -205,9 +241,9 @@ Only the following methods and endpoints are supported. Unknown endpoints, unsup
 
 A control operation also requires a matching existing container, an allowed [command](#command-selection), and a service that is not protected. Read-only operations on individual containers require the same ownership and inspect-mode comparison but do not require the one-off label.
 
-A followed log stream and the event watch beside it keep their response bodies open after the headers. They are ordinary HTTP responses rather than a hijacked connection, and their bodies are relayed chunk by chunk so that a client following them receives output as the daemon writes it.
+A followed log stream and the event watch beside it keep their response bodies open after the headers. They are ordinary HTTP responses rather than a hijacked connection, and their bodies are relayed chunk by chunk so that a client following them receives output as the daemon writes it. An attached exec start uses a bidirectional stream like container attach; a detached start uses an ordinary HTTP response.
 
-Other Docker Compose workflows, including `up`, `down`, `exec`, `build`, and `push`, are not supported through this socket.
+Other Docker Compose workflows, including `up`, `down`, `build`, and `push`, are not supported through this socket.
 
 ## Docker API versions
 

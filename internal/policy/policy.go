@@ -32,18 +32,22 @@ type Config struct {
 	// Listen is the proxy's own restricted socket. A service holding it reaches
 	// the Engine only through the proxy, so it is not protected.
 	Listen string
-	// Engine is read to establish ownership of containers that already exist.
-	// Nothing in this package forwards a request to it.
-	Engine ContainerInspector
+	// Engine is read to establish ownership of containers that already exist, and of
+	// the exec instances running in them. Nothing in this package forwards a request
+	// to it.
+	Engine EngineInspector
 	// AllowedCommands is the set of Compose commands to authorize, as parsed by
 	// ParseCommands. An empty set authorizes no command at all.
 	AllowedCommands Commands
 }
 
-// ContainerInspector reads a container so that its ownership can be established.
-// It is the only Engine operation authorization needs.
-type ContainerInspector interface {
+// EngineInspector is the read-only part of the Engine that authorization needs: a
+// container, whose ownership is established from what the Engine reports, and an exec
+// instance, which names no container at all. It is the only Engine access authorization
+// needs, and it decides nothing on its own.
+type EngineInspector interface {
 	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
+	InspectExec(ctx context.Context, id string) (ExecInfo, error)
 }
 
 // Policy authorizes Docker API requests for one Compose project. It is safe for
@@ -51,7 +55,7 @@ type ContainerInspector interface {
 type Policy struct {
 	project   *types.Project
 	protected protectedServices
-	inspect   ContainerInspector
+	inspect   EngineInspector
 	commands  Commands
 }
 
@@ -153,6 +157,14 @@ func (p *Policy) decide(ctx context.Context, op operation, req *Request) (servic
 		filters, err := p.checkListScope(kindContainer, query.Get("filters"))
 		return "", "", filters, err
 
+	case "/containers/{id}/exec":
+		service, err := p.authorizeExecCreate(ctx, op, req)
+		return service, "", "", err
+
+	case "/exec/{id}/json", "/exec/{id}/start", "/exec/{id}/resize":
+		service, err := p.authorizeExec(ctx, op, req)
+		return service, "", "", err
+
 	case "/images/create":
 		// A pull is what `docker compose pull` performs, and what `run` needs before
 		// it can create anything, so either command authorizes it.
@@ -230,26 +242,37 @@ func (p *Policy) decide(ctx context.Context, op operation, req *Request) (servic
 // authorizeContainer settles ownership of an existing container and then whether
 // the operation may act on it.
 func (p *Policy) authorizeContainer(ctx context.Context, op operation, method string) (string, error) {
-	if op.Target == "" {
-		return "", deny("", "", "container id is empty")
-	}
-	insp, err := p.inspect.InspectContainer(ctx, op.Target)
+	service, insp, err := p.ownContainer(ctx, op.Target, op.Endpoint, method)
 	if err != nil {
-		return "", deny("", "", "container is not accessible through this proxy")
-	}
-	// Ownership first, so that the protected check can only narrow a decision
-	// already made from the container itself rather than from a client label.
-	service, err := p.matchExistingContainer(insp)
-	if err != nil {
-		return "", err
-	}
-	if err := p.protected.checkContainerOperation(service, op.Endpoint, method); err != nil {
 		return "", err
 	}
 	if isReadOnlyOperation(op.Endpoint, method) {
 		return service, nil
 	}
 	return service, p.checkControl(op, insp.Config.Labels)
+}
+
+// ownContainer settles which service an existing container belongs to and whether the
+// endpoint may act on it at all, which is what the protected rule decides. Everything
+// it reads comes from the Engine, never from the request.
+func (p *Policy) ownContainer(ctx context.Context, id, endpoint, method string) (string, container.InspectResponse, error) {
+	if id == "" {
+		return "", container.InspectResponse{}, deny("", "", "container id is empty")
+	}
+	insp, err := p.inspect.InspectContainer(ctx, id)
+	if err != nil {
+		return "", container.InspectResponse{}, deny("", "", "container is not accessible through this proxy")
+	}
+	// Ownership first, so that the protected check can only narrow a decision
+	// already made from the container itself rather than from a client label.
+	service, err := p.matchExistingContainer(insp)
+	if err != nil {
+		return "", container.InspectResponse{}, err
+	}
+	if err := p.protected.checkContainerOperation(service, endpoint, method); err != nil {
+		return "", container.InspectResponse{}, err
+	}
+	return service, insp, nil
 }
 
 // checkControl decides what may be done to a container whose ownership is established.

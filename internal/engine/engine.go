@@ -1,14 +1,18 @@
 // Package engine wraps the Docker client with the read-only operations the proxy
-// needs to answer ownership questions.
+// needs to answer ownership questions about a container or an exec.
 package engine
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+
+	"github.com/hnw/compose-policy-proxy/internal/policy"
 )
 
 type Engine struct {
@@ -40,6 +44,41 @@ func (e *Engine) InspectContainer(ctx context.Context, id string) (container.Ins
 	return e.client.ContainerInspect(ctx, id)
 }
 
+// InspectExec reads one exec instance, which is how an exec id is resolved to the
+// container it runs in. container.ExecInspect carries neither the container nor the
+// privilege the exec was created with, which is the part authorization judges on, so
+// the Engine's answer is decoded here. The path carries no API version, because this is
+// the proxy's own read of the Engine rather than a request from a client that
+// negotiated one.
+func (e *Engine) InspectExec(ctx context.Context, id string) (policy.ExecInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+id+"/json", nil)
+	if err != nil {
+		return policy.ExecInfo{}, err
+	}
+	resp, err := e.client.HTTPClient().Do(req) //nolint:gosec // G704: the Engine socket is the configured upstream
+	if err != nil {
+		return policy.ExecInfo{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return policy.ExecInfo{}, fmt.Errorf("exec inspect answered %s", resp.Status)
+	}
+
+	var answer execInspectAnswer
+	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
+		return policy.ExecInfo{}, fmt.Errorf("exec inspect answer cannot be decoded: %w", err)
+	}
+	info := policy.ExecInfo{ContainerID: answer.ContainerID}
+	if answer.ProcessConfig != nil {
+		info.ProcessConfig = &policy.ExecProcessConfig{
+			User:       answer.ProcessConfig.User,
+			Privileged: answer.ProcessConfig.Privileged,
+			Tty:        answer.ProcessConfig.Tty,
+		}
+	}
+	return info, nil
+}
+
 // APIVersions asks the Engine once which API versions it serves, oldest first, so a
 // daemon the proxy could not speak to is found at startup rather than on the first request.
 func (e *Engine) APIVersions(ctx context.Context) (oldest, newest string, err error) {
@@ -48,4 +87,18 @@ func (e *Engine) APIVersions(ctx context.Context) (oldest, newest string, err er
 		return "", "", err
 	}
 	return version.MinAPIVersion, version.APIVersion, nil
+}
+
+// execInspectAnswer is what `GET /exec/{id}/json` reports. The process configuration is
+// spelled in lowercase, as the Engine spells it, and a field it omits stays nil rather
+// than being read as a zero value.
+type execInspectAnswer struct {
+	ContainerID   string             `json:"ContainerID"`
+	ProcessConfig *execProcessConfig `json:"ProcessConfig"`
+}
+
+type execProcessConfig struct {
+	User       string `json:"user"`
+	Privileged *bool  `json:"privileged"`
+	Tty        bool   `json:"tty"`
 }

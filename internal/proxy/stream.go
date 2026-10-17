@@ -3,19 +3,34 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/docker/docker/api/types/container"
 )
 
 // A Docker attach keeps writing stdin and reading stdout on the hijacked connection
-// after the headers, so streaming endpoints take the client connection over.
-func isStreamingEndpoint(endpoint string) bool {
-	return strings.HasSuffix(endpoint, "/attach")
+// after the headers, and so does an exec start the client attached to. A detached exec
+// start answers with an empty body instead, so it takes the ordinary response path.
+func isStreamingRequest(endpoint string, body []byte) bool {
+	if strings.HasSuffix(endpoint, "/attach") {
+		return true
+	}
+	if endpoint != execStartEndpoint {
+		return false
+	}
+	var start container.ExecStartOptions
+	return json.Unmarshal(body, &start) == nil && !start.Detach
 }
+
+// execStartEndpoint is the allowlisted path of the one exec operation that may answer
+// with a hijacked stream rather than a body.
+const execStartEndpoint = "/exec/{id}/start"
 
 // A followed log stream and the event watch beside it are ordinary HTTP responses whose
 // bodies stay open after the headers, so they are relayed chunk by chunk rather than

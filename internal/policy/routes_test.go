@@ -23,6 +23,7 @@ func TestResolveAllowlistedEndpoints(t *testing.T) {
 		{"/v1.51/containers/json", "/containers/json", "v1.51", ""},
 		{"/v1.51/containers/abc/json", "/containers/{id}/json", "v1.51", "abc"},
 		{"/v1.51/containers/abc/attach", "/containers/{id}/attach", "v1.51", "abc"},
+		{"/v1.51/containers/abc/exec", "/containers/{id}/exec", "v1.51", "abc"},
 		{"/v1.51/containers/abc/start", "/containers/{id}/start", "v1.51", "abc"},
 		{"/v1.51/containers/abc/wait", "/containers/{id}/wait", "v1.51", "abc"},
 		{"/v1.51/containers/abc/stop", "/containers/{id}/stop", "v1.51", "abc"},
@@ -32,6 +33,9 @@ func TestResolveAllowlistedEndpoints(t *testing.T) {
 		{"/v1.51/containers/abc/resize", "/containers/{id}/resize", "v1.51", "abc"},
 		{"/v1.51/containers/abc", "/containers/{id}", "v1.51", "abc"},
 		{"/v1.51/events", "/events", "v1.51", ""},
+		{"/v1.51/exec/abc/json", "/exec/{id}/json", "v1.51", "abc"},
+		{"/v1.51/exec/abc/start", "/exec/{id}/start", "v1.51", "abc"},
+		{"/v1.51/exec/abc/resize", "/exec/{id}/resize", "v1.51", "abc"},
 		{"/v1.51/images/alpine:3.20/json", "/images/{name}/json", "v1.51", "alpine:3.20"},
 		{"/v1.51/images/alpine/json", "/images/{name}/json", "v1.51", "alpine"},
 		{"/v1.51/images/ghcr.io/hnw/compose-policy-proxy:latest/json", "/images/{name}/json", "v1.51",
@@ -67,7 +71,9 @@ func TestResolveRejectsEverythingElse(t *testing.T) {
 	// Anything a Docker client can ask for but the end-to-end tests never
 	// exercised has to be refused, since the allowlist is deny by default.
 	denied := []string{
-		"/v1.51/containers/abc/exec",
+		"/v1.51/containers/abc/pause",
+		// An exec id is one path segment, so this names no exec instance.
+		"/v1.51/exec/..%2F..%2Fcontainers%2Fabc%2Fjson",
 		"/v1.51/containers/abc/copy",
 		"/v1.51/containers/abc/rename",
 		"/v1.51/containers/abc/update",
@@ -149,9 +155,9 @@ func TestCheckMethod(t *testing.T) {
 func TestRefusalNamesTheOperationItWasAbout(t *testing.T) {
 	p := &Policy{}
 
-	decision, err := p.Authorize(t.Context(), request(t, "POST", "/v1.51/containers/abc/exec"))
+	decision, err := p.Authorize(t.Context(), request(t, "POST", "/v1.51/containers/abc/copy"))
 	if err == nil {
-		t.Fatal("exec was allowed")
+		t.Fatal("copy was allowed")
 	}
 	if decision.Endpoint != "" || decision.Target != "" {
 		t.Errorf("an endpoint that never matched should resolve to nothing, got %+v", decision)
@@ -248,6 +254,7 @@ func TestAllowlistIsMinimal(t *testing.T) {
 		"/containers/json",
 		"/containers/{id}",
 		"/containers/{id}/attach",
+		"/containers/{id}/exec",
 		"/containers/{id}/json",
 		"/containers/{id}/kill",
 		"/containers/{id}/logs",
@@ -257,6 +264,9 @@ func TestAllowlistIsMinimal(t *testing.T) {
 		"/containers/{id}/stop",
 		"/containers/{id}/wait",
 		"/events",
+		"/exec/{id}/json",
+		"/exec/{id}/resize",
+		"/exec/{id}/start",
 		"/images/create",
 		"/images/{name}/json",
 		"/info",
@@ -282,12 +292,15 @@ func TestUndescribedContainerOperationIsNotReadOnly(t *testing.T) {
 		"/containers/{id}/logs GET",
 		"/containers/{id} HEAD",
 		"/containers/{id}/attach POST",
+		"/containers/{id}/exec POST",
 		"/containers/{id}/start POST",
 		"/containers/{id}/stop POST",
 		"/containers/{id}/kill POST",
 		"/containers/{id}/resize POST",
 		"/containers/{id} DELETE",
 		"/containers/create POST",
+		"/exec/{id}/start POST",
+		"/exec/{id}/resize POST",
 	} {
 		endpoint, method, _ := strings.Cut(key, " ")
 		if isReadOnlyOperation(endpoint, method) {
@@ -301,8 +314,8 @@ func TestUndescribedContainerOperationIsNotReadOnly(t *testing.T) {
 func TestReadOnlyOperationsAreAllowlisted(t *testing.T) {
 	for key := range readOnlyOperations {
 		endpoint, method, _ := strings.Cut(key, " ")
-		if !strings.HasPrefix(endpoint, "/containers/") {
-			t.Errorf("read-only exception %q is not a container operation", key)
+		if !strings.HasPrefix(endpoint, "/containers/") && !strings.HasPrefix(endpoint, "/exec/") {
+			t.Errorf("read-only exception %q names no container an exec could act on", key)
 			continue
 		}
 		granted := false

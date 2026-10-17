@@ -55,8 +55,8 @@ func TestServeHTTPRefusesWithoutForwarding(t *testing.T) {
 		message string
 	}{
 		{
-			name: "an endpoint outside the allowlist", method: "POST", path: "/v1.51/containers/abc/exec",
-			message: `compose-policy-proxy: docker API endpoint "/containers/abc/exec" is not allowed`,
+			name: "an endpoint outside the allowlist", method: "POST", path: "/v1.51/containers/abc/copy",
+			message: `compose-policy-proxy: docker API endpoint "/containers/abc/copy" is not allowed`,
 		},
 		{
 			name: "a field the compose file does not declare", method: "POST", path: "/v1.51/containers/create",
@@ -320,6 +320,10 @@ func demoProject() *types.Project {
 }
 
 type ownedContainers struct{}
+
+func (ownedContainers) InspectExec(_ context.Context, _ string) (policy.ExecInfo, error) {
+	return policy.ExecInfo{}, errors.New("no such exec instance")
+}
 
 func (ownedContainers) InspectContainer(_ context.Context, id string) (container.InspectResponse, error) {
 	if id != "abc" {

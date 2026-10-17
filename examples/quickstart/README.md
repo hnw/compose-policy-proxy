@@ -4,15 +4,7 @@ This example demonstrates Docker-outside-of-Docker (DooD) with restricted Docker
 
 The `app` container represents a CI runner or bot. It can launch sibling containers using Docker Compose, but all Docker API requests go through `compose-policy-proxy`.
 
-## Services
-
-| Service | Role |
-| --- | --- |
-| `policy-proxy` | Restricts Docker API access using `compose.yaml` |
-| `app` | Runs Docker Compose through the restricted socket |
-| `tool` | A predefined service that `app` can launch |
-
-The host starts `policy-proxy` and `app`. The `tool` service is launched on demand from inside `app`.
+The host starts `policy-proxy` and `app`; `app` has only the restricted Docker socket. The `tool` service is started on demand as a sibling container.
 
 ## Run it
 
@@ -83,18 +75,11 @@ Clean up with:
 docker compose down
 ```
 
-## How it works
+## Adapting the example
 
-The host starts two long-running services:
+`policy-proxy` receives the upstream Docker socket; `app` receives only the proxy socket through the shared `proxy-socket` volume. The `tool` service has the `tools` profile, so host-side `docker compose up -d` does not start it.
 
-- `policy-proxy` receives the host Docker socket.
-- `app` receives only the restricted socket through the shared `proxy-socket` volume.
-
-Both use the same Compose project. The proxy reads its configuration and uses the declared services as the policy for Docker API requests.
-
-The `tool` service has the `tools` profile, so it is not started by the host's `docker compose up -d`. It can still be launched explicitly using `docker compose run tool`.
-
-In a real deployment, replace `app` with your CI runner, bot, or automation service, and define the containerized tools it can launch in `compose.yaml`.
+For a real deployment, replace `app` with your CI runner or bot and define its allowed tools as Compose services.
 
 ## Troubleshooting
 

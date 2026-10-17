@@ -96,7 +96,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Resource: decision.Resource,
 	}.log(p.logger)
 
-	if isStreamingEndpoint(decision.Endpoint) {
+	if isStreamingRequest(decision.Endpoint, body) {
 		p.forwardStream(w, r, body)
 		return
 	}

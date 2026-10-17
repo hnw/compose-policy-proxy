@@ -14,12 +14,13 @@ const (
 	commandRestart = "restart"
 	commandPull    = "pull"
 	commandLogs    = "logs"
+	commandExec    = "exec"
 )
 
 // supportedCommands is every command the policy knows how to authorize, and is also the
 // default, so a command added here is allowed unless an operator narrows the set.
 var supportedCommands = []string{
-	commandRun, commandStart, commandStop, commandRestart, commandPull, commandLogs,
+	commandRun, commandStart, commandStop, commandRestart, commandPull, commandLogs, commandExec,
 }
 
 // Commands is the set of Compose commands a client may perform, as configured by
