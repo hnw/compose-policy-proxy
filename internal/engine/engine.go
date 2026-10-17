@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 
 	"github.com/hnw/compose-policy-proxy/internal/policy"
@@ -42,6 +43,10 @@ func New(host string) (*Engine, error) {
 
 func (e *Engine) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
 	return e.client.ContainerInspect(ctx, id)
+}
+
+func (e *Engine) InspectNetwork(ctx context.Context, id string) (network.Inspect, error) {
+	return e.client.NetworkInspect(ctx, id, network.InspectOptions{})
 }
 
 // InspectExec reads one exec instance, which is how an exec id is resolved to the

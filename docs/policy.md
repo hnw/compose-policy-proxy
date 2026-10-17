@@ -8,11 +8,15 @@ The field inventory in `internal/policy/inventory_test.go` records whether each 
 
 ## Command selection
 
-`--allow-command` selects which Compose commands the proxy authorizes. It defaults to every supported command, `run,start,stop,restart,pull,logs,exec`, and a value given on the command line replaces that default rather than adding to it.
+`--allow-command` selects which Compose commands the proxy authorizes. It defaults to every supported command, `run,up,down,start,stop,restart,pull,logs,exec`, and a value given on the command line replaces that default rather than adding to it.
+
+A command names a set of Docker API permissions, not a CLI invocation. The proxy authorizes each request on its own and never authorizes a command as a whole.
 
 | Command | Docker API operations it authorizes |
 | --- | --- |
 | `run` | one-off container create, and `start`, `stop`, `kill`, `remove`, `attach`, `restart`, and `resize` of that one-off container; the declared image pull, network create, and volume create that `run` needs |
+| `up` | service container create, `start`, `stop`, `remove` and `rename` of a service container, and the network and volume creates it needs |
+| `down` | `stop` and `remove` of a service container, and removal of a network of the project |
 | `start` | `POST /containers/{id}/start` on a service container of the project |
 | `stop` | `POST /containers/{id}/stop` on a service container of the project |
 | `restart` | `POST /containers/{id}/restart` on a service container of the project |
@@ -22,7 +26,7 @@ The field inventory in `internal/policy/inventory_test.go` records whether each 
 
 An unsupported name is refused at startup, a repeated name changes nothing, and an empty list authorizes no command at all.
 
-`restart` requires its own permission; `start` and `stop` do not imply it.
+`restart` requires its own permission; `start` and `stop` do not imply it. `up` and `down` do not imply each other: `down` cannot start a container, and `up` cannot remove a network.
 
 The setting narrows what is authorized and nothing else. Every operation still has to pass the authorization conditions below: project and service ownership read from the Engine, the [configuration checks](#container-configuration), and the [protected service rule](#protected-services). Basic read-only operations remain available independently of `--allow-command`. Log access is an exception and requires `logs` permission.
 
@@ -38,13 +42,13 @@ The setting narrows what is authorized and nothing else. Every operation still h
 | --- | --- |
 | `com.docker.compose.project` | the configured Compose project name |
 | `com.docker.compose.service` | the name of a declared service |
-| `com.docker.compose.oneoff` | `True` |
+| `com.docker.compose.oneoff` | `True` for the one-off container of `run`, `False` for the service container of `up` |
 
-The proxy compares the request with the service named by the label. It does not search for another service whose settings happen to match. The request must pass the [configuration checks](#container-configuration) and must not target a protected service.
+The one-off label decides which command is being performed: a create asking for a one-off container requires `run`, and one asking for the container of a service requires `up`. Any other value, including no label at all, is refused.
 
-Labels are client-supplied. They select the policy to apply; they do not prove that Docker Compose made the request. `docker compose run` supplies these labels, but another Docker API client can also supply them.
+The proxy compares the request with the service named by the label. It does not search for another service whose settings happen to match. The request must pass the [configuration checks](#container-configuration) and must not target a protected service. The comparison is the same one the one-off create uses, so the security-sensitive settings a service container is created with are exactly the ones Compose declares.
 
-Normal service containers cannot be created through the restricted socket. A `docker compose run` invocation that needs a dependency therefore needs that container prepared outside the proxy, which may then start it through [the `start` command](#command-selection).
+Labels are client-supplied. They select the policy to apply; they do not prove that Docker Compose made the request. `docker compose run` and `docker compose up` supply these labels, but another Docker API client can also supply them.
 
 ### Existing containers
 
@@ -56,11 +60,28 @@ For an operation targeting an existing container, the proxy inspects it through 
 
 The proxy does not trust labels supplied with the operation. It uses the labels and settings reported by the Engine. It keeps no container ownership database, so the same checks apply after a proxy restart.
 
-Read-only operations are available for matching service containers, including normal service containers. Control operations require `com.docker.compose.oneoff=True` in the inspect result, except that a normal service container may be started, stopped, and restarted by the [commands](#command-selection) of the same name, or [executed in](#exec). Control operations are denied for protected services. The [endpoint list](#docker-api-allowlist) identifies the operations in each group.
+Read-only operations are available for matching service containers, including normal service containers. Control operations require `com.docker.compose.oneoff=True` in the inspect result, except that a normal service container may be started, stopped, restarted and removed by the [commands](#command-selection) listed below, renamed by `up`, or [executed in](#exec). Control operations are denied for protected services. The [endpoint list](#docker-api-allowlist) identifies the operations in each group.
+
+| Operation on a normal service container | Command |
+| --- | --- |
+| `POST /containers/{id}/start` | `start` or `up` |
+| `POST /containers/{id}/stop` | `stop`, `up` or `down` |
+| `DELETE /containers/{id}` | `down` or `up` |
+| `POST /containers/{id}/rename` | `up` |
+| `POST /containers/{id}/restart` | `restart` |
+| `POST /containers/{id}/kill`, `/attach`, `/resize` | no command, since only a one-off container answers to them |
+
+A removal may not ask for the options that act on something else: `v` would delete the volumes mounted on the container, which belongs to `down --volumes` and is not authorized, and `link` would rewrite the links other containers hold to it. `force` changes how a removal waits and is forwarded.
+
+`POST /containers/{id}/rename` permits only the Compose-assigned name: `container_name` if specified, otherwise `<project>-<service>-<number>`. One-off containers cannot be renamed.
+
+An attached `docker compose up`, which is `up` without `-d`, is not supported: it attaches to the service container, which no command authorizes for a normal service container. Use `up -d`.
 
 Reading a container's logs is not among the read-only operations: it is decided by the `logs` command for both service containers and one-off containers, and a protected service's container is refused.
 
 The one-off label restricts which containers a client may control, not how long they can run. A one-off container may run indefinitely or be started again.
+
+A recreate performed by `up` is an ordinary removal followed by an ordinary create: the container is stopped and removed, and a new one is created from the same Compose definition and started. Nothing about it is authorized as a unit.
 
 ### Inspect-mode comparison
 
@@ -171,12 +192,22 @@ Host-dependent fields that Compose can express, including `StorageOpt`, `VolumeD
 
 Image inspection and pulling are limited to references declared by the Compose project. Image names are normalized for implicit registry, namespace, and tag defaults, so a reference containing slashes is compared as a whole. Pull requests cannot use `fromSrc`, bulk or multi-image pulls, or undeclared references.
 
-`POST /images/create` is authorized by `pull` or by `run`, because a pull is both what `docker compose pull` performs and what `run` needs before it can create anything. The image a protected service uses can be pulled like any other declared image: fetching an image is not an operation on that service's container.
+`POST /images/create` is authorized by `pull` or by `run`, because a pull is both what `docker compose pull` performs and what `run` needs before it can create anything. `up` pulls the same images but gains no permission of its own for it, so an `up` that has to fetch an image still requires `pull` or `run`. The image a protected service uses can be pulled like any other declared image: fetching an image is not an operation on that service's container.
 
-Network and volume inspection is limited to names declared in the project, including external resources. Creating a resource requires its resolved name and a matching Compose definition; resources marked `external` cannot be created through the proxy.
+Network and volume inspection is limited to names declared in the project, including external resources. A network may also be addressed by the identifier the Engine assigned it, which is how Compose reaches one after listing them; the proxy resolves that identifier by reading the network and then requires the same declared name.
+
+Creating a resource requires its resolved name and a matching Compose definition; resources marked `external` cannot be created through the proxy.
 
 - **Networks:** driver, driver options, `internal`, `attachable`, IPv4/IPv6 settings, management labels, and IPAM must match. Ingress and config-only networks are refused. Network scope may be empty, `local`, or `swarm`. IPAM pools are compared individually; if Compose declares no IPAM, a request cannot introduce an IPAM plugin or options (the built-in `default` driver is allowed).
 - **Volumes:** driver, driver options, and required Compose management labels must match. Cluster volume specifications are refused.
+
+Removing a network is what `down` performs, and requires `down` and all of the following:
+
+- the network is one the Compose definition declares, including the implicit `default` network;
+- the declaration is not `external: true`, since such a network belongs to whoever created it; and
+- the Engine reports `com.docker.compose.project=<project>` and `com.docker.compose.network=<key>` on it, the pair Compose itself matches. A matching name alone proves nothing, and neither does one label of the pair: a network an earlier Compose file created under a different key keeps the name but no longer carries the key.
+
+Whether an endpoint is still attached is left to the Engine, which refuses the removal itself. A volume is never removed: `down --volumes` is out of scope, and the volume removal API is not allowlisted.
 
 ## List requests
 
@@ -206,16 +237,17 @@ Only the following methods and endpoints are supported. Unknown endpoints, unsup
 /version                                     GET
 /info                                        GET
 
-/containers/create                           POST         one-off create
+/containers/create                           POST         one-off create (`run`), or service create (`up`)
 /containers/json                             GET          project-scoped list
 /containers/{id}                             GET          read-only
-/containers/{id}                             DELETE       one-off control
+/containers/{id}                             DELETE       one-off control, or `down`/`up` of a service container
 /containers/{id}/json                        GET          read-only
 /containers/{id}/wait                        POST         read-only
 /containers/{id}/attach                      POST         one-off control
 /containers/{id}/exec                        POST         `exec` of an owned container
-/containers/{id}/start                       POST         one-off control, or `start` of a service container
-/containers/{id}/stop                        POST         one-off control, or `stop` of a service container
+/containers/{id}/rename                      POST         `up` gives the container its compose name
+/containers/{id}/start                       POST         one-off control, or `start`/`up` of a service container
+/containers/{id}/stop                        POST         one-off control, or `stop`/`up`/`down` of a service container
 /containers/{id}/restart                     POST         one-off control, or `restart` of a service container
 /containers/{id}/kill                        POST         one-off control
 /containers/{id}/resize                      POST         one-off control
@@ -231,7 +263,8 @@ Only the following methods and endpoints are supported. Unknown endpoints, unsup
 /events                                      GET          project container events, by `logs`
 
 /networks                                    GET          scoped list
-/networks/{id}                               GET          declared network inspect
+/networks/{id}                               GET          declared network inspect, by name or by engine id
+/networks/{id}                               DELETE       `down` of a network this project owns
 /networks/create                             POST         declared network create
 
 /volumes                                     GET          scoped list
@@ -243,7 +276,11 @@ A control operation also requires a matching existing container, an allowed [com
 
 A followed log stream and the event watch beside it keep their response bodies open after the headers. They are ordinary HTTP responses rather than a hijacked connection, and their bodies are relayed chunk by chunk so that a client following them receives output as the daemon writes it. An attached exec start uses a bidirectional stream like container attach; a detached start uses an ordinary HTTP response.
 
-Other Docker Compose workflows, including `up`, `down`, `build`, and `push`, are not supported through this socket.
+The proxy authorizes Docker API requests one at a time. A Compose command that needs an API outside this list fails partway through, leaving whatever it had already done in place, and the proxy neither rolls that back nor excludes resources from the operation to make it succeed.
+
+This version does not cover `down --volumes`, `down --rmi`, `up --remove-orphans` or `up --build`. The options are not parsed and refused by name; the operations fail because the Docker API they need is not authorized. An image a service needs may still be pulled by `up`, through the existing `pull` permission. Other Docker Compose workflows, including `build` and `push`, are not supported through this socket.
+
+The proxy process itself, and the Compose project it serves, are managed from the host rather than through this socket.
 
 ## Docker API versions
 

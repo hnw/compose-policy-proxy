@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -925,7 +926,7 @@ func oneOffLabels(service string) map[string]string {
 	}
 }
 
-func TestCreateRequiresTheLabelsOfAOneOffRun(t *testing.T) {
+func TestCreateRequiresTheLabelsOfTheContainerKind(t *testing.T) {
 	cases := []struct {
 		name    string
 		prepare func(map[string]string)
@@ -935,9 +936,8 @@ func TestCreateRequiresTheLabelsOfAOneOffRun(t *testing.T) {
 		{"another project's label", func(l map[string]string) { l[LabelProject] = "other" }, LabelProject},
 		{"no service label", func(l map[string]string) { delete(l, LabelService) }, LabelService},
 		{"a service the project does not declare", func(l map[string]string) { l[LabelService] = "nope" }, LabelService},
-		{"no oneoff label", func(l map[string]string) { delete(l, LabelOneoff) }, ""},
-		{"a oneoff label set to false", func(l map[string]string) { l[LabelOneoff] = "False" }, ""},
-		{"a oneoff label in another spelling", func(l map[string]string) { l[LabelOneoff] = "true" }, ""},
+		{"no oneoff label", func(l map[string]string) { delete(l, LabelOneoff) }, LabelOneoff},
+		{"a oneoff label in another spelling", func(l map[string]string) { l[LabelOneoff] = "true" }, LabelOneoff},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -946,7 +946,7 @@ func TestCreateRequiresTheLabelsOfAOneOffRun(t *testing.T) {
 			req.Config.Labels = oneOffLabels(service.Name)
 			tc.prepare(req.Config.Labels)
 
-			_, err := (&Policy{project: project}).matchCreate(req)
+			_, err := (&Policy{project: project, commands: DefaultCommands()}).matchCreate(req)
 			pe, ok := Inspect(err)
 			if !ok {
 				t.Fatalf("the create request was accepted, got %v", err)
@@ -958,6 +958,48 @@ func TestCreateRequiresTheLabelsOfAOneOffRun(t *testing.T) {
 	}
 }
 
+func TestCreateFollowsTheCommandItsKindIsFor(t *testing.T) {
+	kinds := []struct {
+		oneoff  string
+		command string
+	}{
+		{oneoffLabelValue, commandRun},
+		{serviceLabelValue, commandUp},
+	}
+	cases := []struct {
+		name     string
+		commands Commands
+	}{
+		{"omitted", DefaultCommands()},
+		{"run,up", Commands{commandRun, commandUp}},
+		{"run", Commands{commandRun}},
+		{"up", Commands{commandUp}},
+		{"empty", nil},
+	}
+	for _, kind := range kinds {
+		for _, tc := range cases {
+			t.Run(kind.command+"/"+tc.name, func(t *testing.T) {
+				project, service, req := fixture()
+				project.Services = types.Services{service.Name: service}
+				req.Config.Labels = oneOffLabels(service.Name)
+				req.Config.Labels[LabelOneoff] = kind.oneoff
+
+				_, err := (&Policy{project: project, commands: tc.commands}).matchCreate(req)
+				if want := slices.Contains(tc.commands, kind.command); want != (err == nil) {
+					t.Fatalf("a %q container create with %v: err = %v, want allowed = %t",
+						kind.oneoff, tc.commands, err, want)
+				}
+				if err == nil {
+					return
+				}
+				if pe, _ := Inspect(err); !strings.Contains(pe.Detail, "compose "+kind.command+" is not available") {
+					t.Errorf("the refusal should name %q, got %q", kind.command, pe.Detail)
+				}
+			})
+		}
+	}
+}
+
 func TestCreateMatchesOnlyTheServiceItsLabelsName(t *testing.T) {
 	oneService := func(t *testing.T) (*types.Project, types.ServiceConfig, *container.CreateRequest) {
 		t.Helper()
@@ -966,11 +1008,10 @@ func TestCreateMatchesOnlyTheServiceItsLabelsName(t *testing.T) {
 		req.Config.Labels = oneOffLabels(service.Name)
 		return project, service, req
 	}
-
 	t.Run("the service the labels name", func(t *testing.T) {
 		project, service, req := oneService(t)
 
-		matched, err := (&Policy{project: project}).matchCreate(req)
+		matched, err := (&Policy{project: project, commands: DefaultCommands()}).matchCreate(req)
 		if err != nil {
 			t.Fatalf("a faithful one-off request was refused, got %v", err)
 		}
@@ -992,7 +1033,7 @@ func TestCreateMatchesOnlyTheServiceItsLabelsName(t *testing.T) {
 		if err := compareService(project, mirror, req, modeCreate); err != nil {
 			t.Fatalf("the request should still match %q, got %v", mirror.Name, err)
 		}
-		_, err := (&Policy{project: project}).matchCreate(req)
+		_, err := (&Policy{project: project, commands: DefaultCommands()}).matchCreate(req)
 		pe, ok := Inspect(err)
 		if !ok {
 			t.Fatal("a request configured like another service was accepted")

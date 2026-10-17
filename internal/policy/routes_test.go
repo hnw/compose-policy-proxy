@@ -31,6 +31,7 @@ func TestResolveAllowlistedEndpoints(t *testing.T) {
 		{"/v1.51/containers/abc/kill", "/containers/{id}/kill", "v1.51", "abc"},
 		{"/v1.51/containers/abc/logs", "/containers/{id}/logs", "v1.51", "abc"},
 		{"/v1.51/containers/abc/resize", "/containers/{id}/resize", "v1.51", "abc"},
+		{"/v1.51/containers/abc/rename", "/containers/{id}/rename", "v1.51", "abc"},
 		{"/v1.51/containers/abc", "/containers/{id}", "v1.51", "abc"},
 		{"/v1.51/events", "/events", "v1.51", ""},
 		{"/v1.51/exec/abc/json", "/exec/{id}/json", "v1.51", "abc"},
@@ -75,7 +76,6 @@ func TestResolveRejectsEverythingElse(t *testing.T) {
 		// An exec id is one path segment, so this names no exec instance.
 		"/v1.51/exec/..%2F..%2Fcontainers%2Fabc%2Fjson",
 		"/v1.51/containers/abc/copy",
-		"/v1.51/containers/abc/rename",
 		"/v1.51/containers/abc/update",
 		"/v1.51/containers/abc/archive",
 		"/v1.51/build",
@@ -189,7 +189,7 @@ func TestRefusalNamesTheOperationItWasAbout(t *testing.T) {
 // TestResourceShapedPathsAreRefusedByOwnership pins that routing is coarse on purpose.
 // A two-segment path resolves to the resource endpoint, and ownership refuses the name.
 func TestResourceShapedPathsAreRefusedByOwnership(t *testing.T) {
-	p := &Policy{project: &types.Project{Name: "demo"}}
+	p := &Policy{project: &types.Project{Name: "demo"}, inspect: stubInspector{}}
 
 	for _, path := range []string{
 		"/v1.51/networks/prune",
@@ -258,6 +258,7 @@ func TestAllowlistIsMinimal(t *testing.T) {
 		"/containers/{id}/json",
 		"/containers/{id}/kill",
 		"/containers/{id}/logs",
+		"/containers/{id}/rename",
 		"/containers/{id}/resize",
 		"/containers/{id}/restart",
 		"/containers/{id}/start",
@@ -297,6 +298,7 @@ func TestUndescribedContainerOperationIsNotReadOnly(t *testing.T) {
 		"/containers/{id}/stop POST",
 		"/containers/{id}/kill POST",
 		"/containers/{id}/resize POST",
+		"/containers/{id}/rename POST",
 		"/containers/{id} DELETE",
 		"/containers/create POST",
 		"/exec/{id}/start POST",

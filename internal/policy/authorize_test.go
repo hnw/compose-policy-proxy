@@ -39,14 +39,25 @@ func demoProject() *types.Project {
 	}
 }
 
-// inspectStub is an Engine that knows one container, so that ownership can be
-// tested without a daemon.
-type inspectStub map[string]container.InspectResponse
+// inspectStub is an Engine that knows one container and one network, so that ownership
+// can be tested without a daemon.
+type inspectStub struct {
+	containers map[string]container.InspectResponse
+	networks   map[string]network.Inspect
+}
 
 func (s inspectStub) InspectContainer(_ context.Context, id string) (container.InspectResponse, error) {
-	insp, ok := s[id]
+	insp, ok := s.containers[id]
 	if !ok {
 		return container.InspectResponse{}, errors.New("no such container")
+	}
+	return insp, nil
+}
+
+func (s inspectStub) InspectNetwork(_ context.Context, id string) (network.Inspect, error) {
+	insp, ok := s.networks[id]
+	if !ok {
+		return network.Inspect{}, errors.New("no such network")
 	}
 	return insp, nil
 }
@@ -76,13 +87,34 @@ func appContainer() container.InspectResponse {
 	}
 }
 
+const networkID = "ec1b59c1122ff53ec6f9fd68b9edc0c0ade6fd111a29627e9fc558224cd2ef97"
+
+func ownedNetwork(name, key string) network.Inspect {
+	return network.Inspect{
+		Name:   name,
+		ID:     networkID,
+		Labels: map[string]string{policy.LabelProject: "demo", policy.LabelNetwork: key},
+	}
+}
+
+func appServiceContainer() container.InspectResponse {
+	insp := appContainer()
+	insp.Config.Labels[policy.LabelOneoff] = "False"
+	return insp
+}
+
 func demoPolicy(t *testing.T) *policy.Policy {
 	t.Helper()
 	p, err := policy.New(policy.Config{
-		Project:         demoProject(),
-		DockerHost:      dockerSocket,
-		Listen:          listenSocket,
-		Engine:          inspectStub{"abc": appContainer()},
+		Project:    demoProject(),
+		DockerHost: dockerSocket,
+		Listen:     listenSocket,
+		Engine: inspectStub{
+			containers: map[string]container.InspectResponse{
+				"abc": appContainer(), "svc": appServiceContainer(),
+			},
+			networks: map[string]network.Inspect{networkID: ownedNetwork("demo_frontend", "frontend")},
+		},
 		AllowedCommands: policy.DefaultCommands(),
 	})
 	if err != nil {
@@ -118,6 +150,14 @@ func TestAuthorizedRequestsReachTheDecision(t *testing.T) {
 			"Labels":{"com.docker.compose.project":"demo","com.docker.compose.service":"app","com.docker.compose.oneoff":"True"},
 			"HostConfig":{"NetworkMode":"demo_frontend"},
 			"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`},
+		{"service container create", "POST", "/v1.51/containers/create", `{
+			"Image":"alpine:3.20",
+			"Labels":{"com.docker.compose.project":"demo","com.docker.compose.service":"app","com.docker.compose.oneoff":"False"},
+			"HostConfig":{"NetworkMode":"demo_frontend"},
+			"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`},
+		{"service container stop", "POST", "/v1.51/containers/svc/stop", ""},
+		{"service container removal", "DELETE", "/v1.51/containers/svc?force=1", ""},
+		{"service container rename", "POST", "/v1.51/containers/svc/rename?name=demo-app-1", ""},
 		{"container inspect", "GET", "/v1.51/containers/abc/json", ""},
 		{"container resize", "POST", "/v1.51/containers/abc/resize?h=24&w=80", ""},
 		{"container list", "GET", "/v1.51/containers/json?filters=" +
@@ -129,6 +169,8 @@ func TestAuthorizedRequestsReachTheDecision(t *testing.T) {
 			"Name":"demo_frontend",
 			"Labels":{"com.docker.compose.project":"demo","com.docker.compose.network":"frontend"}}`},
 		{"network inspect", "GET", "/v1.51/networks/demo_frontend", ""},
+		{"network inspect by the id the engine assigned", "GET", "/v1.51/networks/" + networkID, ""},
+		{"network removal", "DELETE", "/v1.51/networks/" + networkID, ""},
 		{"volume create", "POST", "/v1.51/volumes/create", `{
 			"Name":"demo_cache",
 			"Labels":{"com.docker.compose.project":"demo","com.docker.compose.volume":"cache"}}`},
@@ -187,12 +229,13 @@ func TestRefusedRequests(t *testing.T) {
 			detail: `this proxy serves project "demo"`,
 		},
 		{
-			name: "a create request that is not a one-off", method: "POST",
+			name: "a create request that names no kind of container", method: "POST",
 			path: "/v1.51/containers/create",
 			body: `{"Image":"alpine:3.20","Labels":{"com.docker.compose.project":"demo",` +
 				`"com.docker.compose.service":"app"},"HostConfig":{"NetworkMode":"demo_frontend"},
 				"NetworkingConfig":{"EndpointsConfig":{"demo_frontend":{}}}}`,
-			detail: `container creation is limited to one-off containers`,
+			field:  "com.docker.compose.oneoff",
+			detail: `container creation is limited to one-off containers (run) and service containers (up)`,
 		},
 		{
 			name: "a field the compose file does not declare", method: "POST",
@@ -245,6 +288,14 @@ func TestRefusedRequests(t *testing.T) {
 			detail: `volume "someone_elses" is not declared by compose project`,
 		},
 		{
+			name: "removing a volume of the project", method: "DELETE", path: "/v1.51/volumes/demo_cache",
+			detail: "method DELETE is not allowed",
+		},
+		{
+			name: "removing an image of the project", method: "DELETE", path: "/v1.51/images/alpine:3.20",
+			detail: `endpoint "/images/alpine:3.20" is not allowed`,
+		},
+		{
 			name: "a list that cannot be scoped to the project", method: "GET", path: "/v1.51/containers/json",
 			detail: "list request carries no filters, so it would observe every container",
 		},
@@ -273,10 +324,9 @@ func TestRefusedRequests(t *testing.T) {
 // protected rule needs not to exist. A client cannot reach a container by labelling it.
 func TestOwnershipCannotBeFakedWithClientControlledLabels(t *testing.T) {
 	project := demoProject()
-	stub := inspectStub{}
 	containerOf := appContainer()
 	containerOf.Config.Labels[policy.LabelProject] = "someone-elses-project"
-	stub["abc"] = containerOf
+	stub := inspectStub{containers: map[string]container.InspectResponse{"abc": containerOf}}
 	p, err := policy.New(policy.Config{
 		Project:    project,
 		DockerHost: dockerSocket,

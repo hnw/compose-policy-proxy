@@ -70,9 +70,11 @@ These restrictions reduce unnecessary information disclosure but are not relied 
 
 ## Container creation and control
 
-Container creation is limited to one-off containers, as used by `docker compose run`. Existing service containers may be started, stopped, restarted, and executed in with `exec`, but cannot be created or otherwise controlled through the restricted socket. Read-only operations remain available when the container passes the ownership and configuration checks.
+Container creation is limited to the two container kinds Compose creates: the one-off container of `docker compose run`, and the service container of `docker compose up`. Either is refused for a protected service. A service container may be started, stopped, restarted, removed and renamed by the commands that perform those operations, and executed in with `exec`. Read-only operations remain available when the container passes the ownership and configuration checks.
 
-One-off containers are identified by `com.docker.compose.oneoff=True`. This label is client-controlled and does not prove that Docker Compose made the request. The container must still match a declared Compose service. The label does not limit how long a container may run.
+Both kinds are created through the same comparison against the Compose file, so `up` grants no configuration a `run` would not also have to match.
+
+The kind is identified by `com.docker.compose.oneoff`, `True` or `False`. This label is client-controlled and does not prove that Docker Compose made the request; it decides which command is being performed, and the container must still match a declared Compose service. The label does not limit how long a container may run.
 
 `--allow-command` limits available operations but cannot bypass these checks. See [policy.md](policy.md) for the command and API rules.
 
@@ -132,4 +134,4 @@ These limitations mean the rule cannot guarantee that every service with Docker 
 
 The proxy resolves its Compose project, protected services, and seccomp profiles at startup. The allowed command set is also fixed at startup.
 
-Changing the Compose definition or `--allow-command` does not update an already-running proxy. The proxy must be restarted for the new policy to take effect.
+Changing the Compose definition or `--allow-command` does not update an already-running proxy. The proxy must be restarted for the new policy to take effect. Since the proxy is itself a service of the project it serves, a changed Compose file means stopping and removing the whole project, proxy included, from the host and starting it again.

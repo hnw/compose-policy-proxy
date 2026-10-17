@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/docker/docker/api/types/container"
 )
 
 // An exec id names no container, so every operation on one is decided from what the
@@ -72,7 +74,9 @@ func execFixture(commands Commands) *Policy {
 	return &Policy{
 		project: &project,
 		inspect: execInspector{
-			stubInspector: stubInspector{containerID: oneOff, serviceID: ordinary},
+			stubInspector: stubInspector{containers: map[string]container.InspectResponse{
+				containerID: oneOff, serviceID: ordinary,
+			}},
 			execs: map[string]ExecInfo{
 				execID:         {ContainerID: containerID, ProcessConfig: &ExecProcessConfig{Privileged: &unprivileged}},
 				terminalExecID: {ContainerID: containerID, ProcessConfig: &ExecProcessConfig{Privileged: &unprivileged, Tty: true}},

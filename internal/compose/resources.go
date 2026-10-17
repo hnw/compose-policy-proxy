@@ -32,6 +32,16 @@ func NetworkNames(project *types.Project) map[string]string {
 	return names
 }
 
+// NetworkKey is the Compose key of the network a Docker name resolves to.
+func NetworkKey(project *types.Project, name string) (string, bool) {
+	for key, cfg := range project.Networks {
+		if cfg.Name == name {
+			return key, true
+		}
+	}
+	return "", false
+}
+
 func VolumeNames(project *types.Project) map[string]string {
 	names := make(map[string]string, len(project.Volumes))
 	for key, cfg := range project.Volumes {

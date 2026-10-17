@@ -77,12 +77,12 @@ func TestDeclaredNetworksAndVolumesAreRecognised(t *testing.T) {
 	for _, name := range []string{
 		"demo_default", "demo_frontend", "custom-frontend-name", "shared-net", "demo_ipam_net", "demo_internal_net",
 	} {
-		if !networkIsDeclared(p, name) {
+		if _, ok := compose.NetworkKey(p, name); !ok {
 			t.Errorf("network %q should be recognised as declared", name)
 		}
 	}
 	for _, name := range []string{"other_net", "demo_cache_other", ""} {
-		if networkIsDeclared(p, name) {
+		if _, ok := compose.NetworkKey(p, name); ok {
 			t.Errorf("network %q should not be recognised", name)
 		}
 	}
@@ -509,5 +509,92 @@ func TestPullPolicy(t *testing.T) {
 	}
 	if err := allowPull(p, "", false); err == nil {
 		t.Error("a pull with no target was allowed")
+	}
+}
+
+func networkInspect(name, project, key string) network.Inspect {
+	insp := network.Inspect{Name: name, ID: networkID, Labels: map[string]string{}}
+	if project != "" {
+		insp.Labels[LabelProject] = project
+	}
+	if key != "" {
+		insp.Labels[LabelNetwork] = key
+	}
+	return insp
+}
+
+const networkID = "a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1"
+
+func TestNetworkRemovalFollowsTheDeclaredNetworkAndTheDownCommand(t *testing.T) {
+	project := resourceProject()
+	owned := networkInspect("demo_default", "demo", "default")
+	external := networkInspect("shared-net", "", "")
+	impersonating := networkInspect("demo_frontend", "another-project", "frontend")
+	unlabelled := networkInspect("custom-frontend-name", "", "named")
+	rekeyed := networkInspect("demo_internal_net", "demo", "some-earlier-key")
+
+	all := &Policy{project: project, commands: DefaultCommands(), inspect: stubInspector{
+		networks: map[string]network.Inspect{
+			"owned":                owned,
+			"demo_default":         owned,
+			"external":             external,
+			"shared-net":           external,
+			"another-project":      impersonating,
+			"unlabelled":           unlabelled,
+			"custom-frontend-name": unlabelled,
+			"rekeyed":              rekeyed,
+		},
+	}}
+
+	cases := []struct {
+		name    string
+		method  string
+		target  string
+		want    bool
+		detail  string
+		noComds bool
+	}{
+		{name: "a network the project owns, by name", method: "DELETE", target: "demo_default", want: true},
+		{name: "a network the project owns, by the id the engine assigned", method: "DELETE", target: "owned", want: true},
+		{name: "reading it", method: "GET", target: "owned", want: true},
+		{name: "a network declared external", method: "DELETE", target: "external",
+			detail: "declared external"},
+		{name: "a network another project owns", method: "DELETE", target: "another-project",
+			detail: "not owned by this compose project"},
+		{name: "a network whose ownership cannot be confirmed", method: "DELETE", target: "unlabelled",
+			detail: "not owned by this compose project"},
+		{name: "a network an earlier compose file created under another key", method: "DELETE",
+			target: "rekeyed", detail: `not declared as "internal_net"`},
+		{name: "a network the project does not declare", method: "DELETE", target: "demo_cache",
+			detail: "is not declared by compose project"},
+		{name: "a network the engine does not hold", method: "DELETE", target: "unknown",
+			detail: "is not declared by compose project"},
+		{name: "without the down command", method: "DELETE", target: "owned",
+			detail: "compose down is not available", noComds: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := *all
+			if tc.noComds {
+				p.commands = Commands{commandUp, commandRun}
+			}
+			_, err := p.Authorize(t.Context(),
+				request(t, tc.method, "/v1.51/networks/"+tc.target))
+			if tc.want {
+				if err != nil {
+					t.Fatalf("%s /networks/%s must be allowed, got %v", tc.method, tc.target, err)
+				}
+				return
+			}
+			pe, ok := Inspect(err)
+			if !ok {
+				t.Fatalf("%s /networks/%s was allowed, or failed without a policy refusal: %v",
+					tc.method, tc.target, err)
+			}
+			if !strings.Contains(pe.Detail, tc.detail) {
+				t.Errorf("%s /networks/%s was refused as %q, want it to mention %q",
+					tc.method, tc.target, pe.Detail, tc.detail)
+			}
+		})
 	}
 }

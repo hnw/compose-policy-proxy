@@ -70,9 +70,9 @@ See the [example README](examples/quickstart/README.md) for denied-request examp
 
 ## Supported operations
 
-The proxy supports the Compose commands `run`, `start`, `stop`, `restart`, `pull`, `logs`, and `exec`.
+The proxy supports the Compose commands `run`, `up`, `down`, `start`, `stop`, `restart`, `pull`, `logs`, and `exec`.
 
-`run` creates one-off containers. `start`, `stop`, and `restart` operate on service containers created outside the proxy. `exec` runs commands in existing project containers. `pull` fetches declared images, and `logs` reads project container logs.
+`run` creates one-off containers. `up` creates and starts the containers of the project, and recreates them when they no longer match the Compose file; use `up -d`, since an attached `up` is not supported. `down` stops and removes them, along with the networks the project owns. `start`, `stop`, and `restart` operate on service containers that already exist. `exec` runs commands in existing project containers. `pull` fetches declared images, and `logs` reads project container logs.
 
 `--allow-command` selects which of these commands are available. It defaults to all of them, and naming it replaces that default:
 
@@ -85,13 +85,16 @@ compose-policy-proxy --allow-command=run
 
 # Starting and stopping existing services, without creating one-off containers
 compose-policy-proxy --allow-command=start,stop
+
+# Bringing the project up and taking it down again
+compose-policy-proxy --allow-command=up,down
 ```
 
 `logs` requires its own permission because container output may contain secrets. The detailed permission rules are in [Docker API policy](docs/policy.md).
 
-Other Compose workflows, including `up`, `down`, `build`, and `push`, are not supported through the restricted socket.
+Other Compose workflows, including `build` and `push`, are not supported through the restricted socket, and neither are `down --volumes`, `down --rmi`, `up --remove-orphans` or `up --build`.
 
-The proxy itself must be managed directly from the host.
+The proxy itself, and the Compose project it serves, must be managed directly from the host.
 
 ## Security model
 
@@ -113,14 +116,14 @@ It requires:
 
 The application and proxy must resolve the same Compose project. Bind mount paths must also be accessible to the Docker Engine.
 
-The Compose project is loaded at startup. Restart the proxy after changing its configuration.
+The Compose project is loaded at startup and treated as fixed. After changing the Compose file, stop and remove the whole project, proxy included, from the host and start it again; a running proxy keeps authorizing the project it loaded, not the one on disk.
 
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--listen` | `/run/compose-policy-proxy/docker.sock` | Restricted socket path |
 | `--docker-host` | `/var/run/docker.sock` | Host Docker socket |
 | `--socket-mode` | `0660` | Restricted socket permissions |
-| `--allow-command` | `run,start,stop,restart,pull,logs,exec` | Compose commands to allow |
+| `--allow-command` | `run,up,down,start,stop,restart,pull,logs,exec` | Compose commands to allow |
 | `--log-format` | `text` | `text` or `json` |
 | `--log-level` | `info` | Logging verbosity |
 

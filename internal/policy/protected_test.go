@@ -59,7 +59,7 @@ func protectedFixture() (*Policy, map[string]*container.CreateRequest, stubInspe
 	}
 	project.Services = types.Services{}
 	requests := map[string]*container.CreateRequest{}
-	inspector := stubInspector{}
+	inspector := stubInspector{containers: map[string]container.InspectResponse{}}
 
 	for _, spec := range []struct{ name, source string }{
 		{"proxy", hostSocket},
@@ -69,7 +69,7 @@ func protectedFixture() (*Policy, map[string]*container.CreateRequest, stubInspe
 		service, req = socketService(service, req, spec.name, spec.source)
 		project.Services[spec.name] = service
 		requests[spec.name] = req
-		inspector[spec.name] = inspectOf(*project, service, req)
+		inspector.containers[spec.name] = inspectOf(*project, service, req)
 	}
 
 	_, service, req := fixture()
@@ -80,7 +80,7 @@ func protectedFixture() (*Policy, map[string]*container.CreateRequest, stubInspe
 	}
 	project.Services[service.Name] = service
 	requests[service.Name] = req
-	inspector[service.Name] = inspectOf(*project, service, req)
+	inspector.containers[service.Name] = inspectOf(*project, service, req)
 
 	p, err := New(Config{
 		Project:         project,
@@ -140,6 +140,35 @@ func TestProtectedServiceCannotBeCreated(t *testing.T) {
 	}
 	if want := `service "proxy": `; !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("refusal = %q, want it to open with %q", err, want)
+	}
+}
+
+func TestProtectedServiceContainerCannotBeCreated(t *testing.T) {
+	p, requests, _ := protectedFixture()
+
+	req := requests["proxy"]
+	req.Config.Labels[LabelOneoff] = serviceLabelValue
+	_, err := create(t, p, req)
+	pe, ok := Inspect(err)
+	if !ok {
+		t.Fatalf("a service container of a protected service was accepted: %v", err)
+	}
+	if pe.Service != "proxy" || !strings.Contains(pe.Detail, "not allowed for a protected service") {
+		t.Errorf("denial = %v, want the protected-service one", err)
+	}
+}
+
+func TestUnprotectedServiceContainerCanBeCreated(t *testing.T) {
+	p, requests, _ := protectedFixture()
+
+	req := requests["app"]
+	req.Config.Labels[LabelOneoff] = serviceLabelValue
+	decision, err := create(t, p, req)
+	if err != nil {
+		t.Fatalf("the container of an unprotected service must remain launchable, got %v", err)
+	}
+	if decision.Service != "app" {
+		t.Fatalf("matched %q, want app", decision.Service)
 	}
 }
 
@@ -204,6 +233,7 @@ func TestProtectedContainerOperations(t *testing.T) {
 		{"wait", "POST", "/wait", true},
 		{"start", "POST", "/start", false},
 		{"stop", "POST", "/stop", false},
+		{"rename", "POST", "/rename?name=demo-proxy-1", false},
 		{"restart", "POST", "/restart", false},
 		{"logs", "GET", "/logs", false},
 		{"kill", "POST", "/kill", false},

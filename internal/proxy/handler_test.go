@@ -325,6 +325,10 @@ func (ownedContainers) InspectExec(_ context.Context, _ string) (policy.ExecInfo
 	return policy.ExecInfo{}, errors.New("no such exec instance")
 }
 
+func (ownedContainers) InspectNetwork(_ context.Context, _ string) (network.Inspect, error) {
+	return network.Inspect{}, errors.New("no such network")
+}
+
 func (ownedContainers) InspectContainer(_ context.Context, id string) (container.InspectResponse, error) {
 	if id != "abc" {
 		return container.InspectResponse{}, errors.New("no such container")

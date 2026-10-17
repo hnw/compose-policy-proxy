@@ -24,6 +24,7 @@ var allowlist = map[string][]string{
 	"/containers/{id}/json":    {"GET"},
 	"/containers/{id}/attach":  {"POST"},
 	"/containers/{id}/exec":    {"POST"},
+	"/containers/{id}/rename":  {"POST"},
 	"/containers/{id}/start":   {"POST"},
 	"/containers/{id}/wait":    {"POST"},
 	"/containers/{id}/stop":    {"POST"},
@@ -46,9 +47,9 @@ var allowlist = map[string][]string{
 	// followed log stream needs.
 	"/events": {"GET"},
 
-	// Networks. Inspect and list, scoped to declared networks, plus create.
+	// Networks. Inspect and list, scoped to declared networks, plus create and remove.
 	"/networks":        {"GET"},
-	"/networks/{id}":   {"GET"},
+	"/networks/{id}":   {"GET", "DELETE"},
 	"/networks/create": {"POST"},
 
 	// Volumes. Inspect and list, scoped to declared volumes, plus create.

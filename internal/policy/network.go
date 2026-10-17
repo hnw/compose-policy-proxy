@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"context"
 	"maps"
 	"slices"
 	"strings"
@@ -11,28 +12,57 @@ import (
 	"github.com/hnw/compose-policy-proxy/internal/compose"
 )
 
-// networkIsDeclared reports whether name is one of the networks this project
-// declares, managed or external, and says nothing about which project owns it.
-func networkIsDeclared(project *types.Project, name string) bool {
-	for _, resolved := range compose.NetworkNames(project) {
-		if resolved == name {
-			return true
+const networkRemoveEndpoint = "/networks/{id}"
+
+// Compose addresses a network by the identifier the Engine assigned it, so an identifier
+// is resolved to a name rather than matched as one.
+func (p *Policy) ownNetwork(ctx context.Context, target string) (string, error) {
+	if key, ok := compose.NetworkKey(p.project, target); ok {
+		return key, nil
+	}
+	if insp, err := p.inspect.InspectNetwork(ctx, target); err == nil {
+		if key, ok := compose.NetworkKey(p.project, insp.Name); ok {
+			return key, nil
 		}
 	}
-	return false
+	return "", denyf("", "",
+		"network %q is not declared by compose project %q", target, p.project.Name)
+}
+
+func (p *Policy) authorizeNetworkRemove(ctx context.Context, op operation) (string, error) {
+	key, err := p.ownNetwork(ctx, op.Target)
+	if err != nil {
+		return "", err
+	}
+	if err := p.commands.check(commandDown); err != nil {
+		return "", err
+	}
+	if cfg := p.project.Networks[key]; cfg.External {
+		return "", denyf("", "External",
+			"network %q is declared external and belongs to whoever created it", cfg.Name)
+	}
+	insp, err := p.inspect.InspectNetwork(ctx, op.Target)
+	if err != nil {
+		return "", deny("", "", "network is not accessible through this proxy")
+	}
+	if insp.Labels[LabelProject] != p.project.Name {
+		return "", deny("", "", "network is not owned by this compose project")
+	}
+	// Compose pairs the project label with the key it declared the network under, and
+	// refuses to remove a network the pair does not name, such as one an earlier
+	// Compose file created under a different key.
+	if insp.Labels[LabelNetwork] != key {
+		return "", denyf("", LabelNetwork,
+			"network is not declared as %q by compose project %q", key, p.project.Name)
+	}
+	return key, nil
 }
 
 // matchNetworkCreate compares a network create request against the Compose
 // network it claims to create, and reports the Compose key it matched.
 func matchNetworkCreate(project *types.Project, req network.CreateRequest) (string, error) {
-	var key string
-	for candidate, cfg := range project.Networks {
-		if cfg.Name == req.Name {
-			key = candidate
-			break
-		}
-	}
-	if key == "" {
+	key, ok := compose.NetworkKey(project, req.Name)
+	if !ok {
 		return "", denyf("", "Name",
 			"network %q is not declared by compose project %q", req.Name, project.Name)
 	}

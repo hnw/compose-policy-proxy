@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -42,12 +44,14 @@ type Config struct {
 }
 
 // EngineInspector is the read-only part of the Engine that authorization needs: a
-// container, whose ownership is established from what the Engine reports, and an exec
-// instance, which names no container at all. It is the only Engine access authorization
-// needs, and it decides nothing on its own.
+// container, whose ownership is established from what the Engine reports, an exec
+// instance, which names no container at all, and a network, which an operation may
+// address by the identifier the Engine assigned it. It is the only Engine access
+// authorization needs, and it decides nothing on its own.
 type EngineInspector interface {
 	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
 	InspectExec(ctx context.Context, id string) (ExecInfo, error)
+	InspectNetwork(ctx context.Context, id string) (network.Inspect, error)
 }
 
 // Policy authorizes Docker API requests for one Compose project. It is safe for
@@ -99,7 +103,7 @@ type Decision struct {
 	Endpoint string
 	Target   string
 	Service  string
-	// Resource is the Compose key a network or volume create matched. It is not a
+	// Resource is the Compose key a network or volume operation matched. It is not a
 	// service name, so it is recorded apart from one.
 	Resource string
 	// Filters is the `filters` query the proxy forwards instead of the client's,
@@ -131,10 +135,8 @@ func (p *Policy) Authorize(ctx context.Context, req *Request) (Decision, error) 
 func (p *Policy) decide(ctx context.Context, op operation, req *Request) (service, resource, filters string, err error) {
 	query := req.URL.Query()
 
-	// The operations only `run` performs are authorized before the request is
-	// interpreted, since nothing about their body changes what they are.
-	if runOnlyOperations[op.Endpoint] {
-		if err := p.commands.check(commandRun); err != nil {
+	if createOperations[op.Endpoint] {
+		if err := p.commands.checkRunOrUp(); err != nil {
 			return "", "", "", err
 		}
 	}
@@ -215,17 +217,18 @@ func (p *Policy) decide(ctx context.Context, op operation, req *Request) (servic
 	}
 
 	// Everything left names one resource. A container must be inspected before it
-	// can be acted on at all, a network and a volume are matched by name.
+	// can be acted on at all, a network is resolved to the declaration it came from,
+	// and a volume is matched by name.
 	switch {
 	case strings.HasPrefix(op.Endpoint, "/containers/"):
-		service, err := p.authorizeContainer(ctx, op, req.Method)
+		service, err := p.authorizeContainer(ctx, op, req)
 		return service, "", "", err
+	case op.Endpoint == networkRemoveEndpoint && req.Method == http.MethodDelete:
+		key, err := p.authorizeNetworkRemove(ctx, op)
+		return "", key, "", err
 	case strings.HasPrefix(op.Endpoint, "/networks/"):
-		if !networkIsDeclared(p.project, op.Target) {
-			return "", "", "", denyf("", "",
-				"network %q is not declared by compose project %q", op.Target, p.project.Name)
-		}
-		return "", "", "", nil
+		key, err := p.ownNetwork(ctx, op.Target)
+		return "", key, "", err
 	case strings.HasPrefix(op.Endpoint, "/volumes/"):
 		if !volumeIsDeclared(p.project, op.Target) {
 			return "", "", "", denyf("", "",
@@ -241,15 +244,18 @@ func (p *Policy) decide(ctx context.Context, op operation, req *Request) (servic
 
 // authorizeContainer settles ownership of an existing container and then whether
 // the operation may act on it.
-func (p *Policy) authorizeContainer(ctx context.Context, op operation, method string) (string, error) {
-	service, insp, err := p.ownContainer(ctx, op.Target, op.Endpoint, method)
+func (p *Policy) authorizeContainer(ctx context.Context, op operation, req *Request) (string, error) {
+	service, insp, err := p.ownContainer(ctx, op.Target, op.Endpoint, req.Method)
 	if err != nil {
 		return "", err
 	}
-	if isReadOnlyOperation(op.Endpoint, method) {
+	if isReadOnlyOperation(op.Endpoint, req.Method) {
 		return service, nil
 	}
-	return service, p.checkControl(op, insp.Config.Labels)
+	if err := checkRemoveOptions(op, req); err != nil {
+		return service, err
+	}
+	return service, p.checkControl(op, req, service, insp.Config.Labels)
 }
 
 // ownContainer settles which service an existing container belongs to and whether the
@@ -278,19 +284,45 @@ func (p *Policy) ownContainer(ctx context.Context, id, endpoint, method string) 
 // checkControl decides what may be done to a container whose ownership is established.
 // A one-off container belongs to `run`; an ordinary one belongs to the command that
 // acts on it, and to no other.
-func (p *Policy) checkControl(op operation, labels map[string]string) error {
+func (p *Policy) checkControl(op operation, req *Request, service string, labels map[string]string) error {
 	// Logs return what the container wrote, so `run` on a one-off container says
 	// nothing about them; only `logs` does, whichever kind of container it is.
 	if op.Endpoint == logsEndpoint {
 		return p.commands.check(commandLogs)
 	}
+	if op.Endpoint == renameEndpoint {
+		if err := p.commands.check(commandUp); err != nil {
+			return err
+		}
+		if isOneOff(labels) {
+			return deny(service, "", "docker compose renames only the container it creates for a service")
+		}
+		return p.checkContainerName(req.URL.Query().Get("name"), service, labels)
+	}
 	if isOneOff(labels) {
 		return p.commands.check(commandRun)
 	}
-	if command, ok := serviceContainerOperations[op.Endpoint]; ok {
-		return p.commands.check(command)
+	if commands, ok := serviceContainerOperations[op.Endpoint]; ok {
+		return p.commands.checkAny(commands...)
 	}
 	return deny("", "", "this operation is not allowed for a service container")
+}
+
+func checkRemoveOptions(op operation, req *Request) error {
+	if op.Endpoint != containerRemoveEndpoint || req.Method != http.MethodDelete {
+		return nil
+	}
+	for _, name := range []string{"v", "link"} {
+		value := req.URL.Query().Get(name)
+		if value == "" {
+			continue
+		}
+		if on, err := strconv.ParseBool(value); err != nil || on {
+			return denyf("", name,
+				"removing a container may not ask for %s=%s, which acts on something else", name, value)
+		}
+	}
+	return nil
 }
 
 // decodeRequest refuses any field the Moby types do not know, since Go would

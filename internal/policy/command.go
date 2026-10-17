@@ -9,6 +9,8 @@ import (
 // The Compose commands this proxy supports, named as the CLI accepts them.
 const (
 	commandRun     = "run"
+	commandUp      = "up"
+	commandDown    = "down"
 	commandStart   = "start"
 	commandStop    = "stop"
 	commandRestart = "restart"
@@ -20,7 +22,8 @@ const (
 // supportedCommands is every command the policy knows how to authorize, and is also the
 // default, so a command added here is allowed unless an operator narrows the set.
 var supportedCommands = []string{
-	commandRun, commandStart, commandStop, commandRestart, commandPull, commandLogs, commandExec,
+	commandRun, commandUp, commandDown, commandStart, commandStop, commandRestart,
+	commandPull, commandLogs, commandExec,
 }
 
 // Commands is the set of Compose commands a client may perform, as configured by
@@ -79,19 +82,22 @@ func (c Commands) checkAny(commands ...string) error {
 	return c.check(commands[0])
 }
 
-// runOnlyOperations are the operations `docker compose run` performs that no other
-// supported command does. They are named rather than derived, so a create added later
-// has to be classified instead of following the ones already here.
-var runOnlyOperations = map[string]bool{
-	"/containers/create": true,
-	"/networks/create":   true,
-	"/volumes/create":    true,
+var createOperations = map[string]bool{
+	"/networks/create": true,
+	"/volumes/create":  true,
 }
 
-// serviceContainerOperations are the operations an ordinary service container answers to
-// by the command of the same name. A one-off container belongs to `run` instead.
-var serviceContainerOperations = map[string]string{
-	"/containers/{id}/start":   commandStart,
-	"/containers/{id}/stop":    commandStop,
-	"/containers/{id}/restart": commandRestart,
+var serviceContainerOperations = map[string][]string{
+	"/containers/{id}/start":   {commandStart, commandUp},
+	"/containers/{id}/stop":    {commandStop, commandUp, commandDown},
+	"/containers/{id}/restart": {commandRestart},
+	"/containers/{id}":         {commandDown, commandUp},
+}
+
+func (c Commands) checkRunOrUp() error {
+	if slices.Contains(c, commandRun) || slices.Contains(c, commandUp) {
+		return nil
+	}
+	return denyf("", "", "docker compose %s and docker compose %s are both unavailable through this proxy",
+		commandRun, commandUp)
 }

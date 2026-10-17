@@ -521,7 +521,7 @@ func projectContainers(t *testing.T, p *project) []string {
 	return ids
 }
 
-func (p *project) containerForService(t *testing.T, service string) string {
+func projectContainersForService(t *testing.T, p *project, service string) []string {
 	t.Helper()
 	cmd := exec.Command("docker", "ps", "-aq", "--filter",
 		"label=com.docker.compose.project="+p.name,
@@ -531,7 +531,12 @@ func (p *project) containerForService(t *testing.T, service string) string {
 	if err != nil {
 		t.Fatalf("list containers of service %s: %v", service, err)
 	}
-	ids := strings.Fields(string(out))
+	return strings.Fields(string(out))
+}
+
+func (p *project) containerForService(t *testing.T, service string) string {
+	t.Helper()
+	ids := projectContainersForService(t, p, service)
 	if len(ids) != 1 {
 		t.Fatalf("expected exactly one container for service %s, got %v", service, ids)
 	}

@@ -11,15 +11,23 @@ import (
 // Compose management labels the policy reads. Every other label Compose writes
 // carries no authority here, so it is neither trusted nor named.
 const (
-	LabelProject = "com.docker.compose.project"
-	LabelService = "com.docker.compose.service"
-	LabelOneoff  = "com.docker.compose.oneoff"
-	LabelNetwork = "com.docker.compose.network"
-	LabelVolume  = "com.docker.compose.volume"
+	LabelProject         = "com.docker.compose.project"
+	LabelService         = "com.docker.compose.service"
+	LabelOneoff          = "com.docker.compose.oneoff"
+	LabelContainerNumber = "com.docker.compose.container-number"
+	LabelNetwork         = "com.docker.compose.network"
+	LabelVolume          = "com.docker.compose.volume"
 )
 
-// oneoffLabelValue is what Compose writes for a one-off container.
-const oneoffLabelValue = "True"
+const (
+	oneoffLabelValue  = "True"
+	serviceLabelValue = "False"
+)
+
+const (
+	renameEndpoint          = "/containers/{id}/rename"
+	containerRemoveEndpoint = "/containers/{id}"
+)
 
 // matchCreate reports which service a create request matches. The Compose labels
 // name that service, so they are required rather than a hint.
@@ -32,7 +40,19 @@ func (p *Policy) matchCreate(req *container.CreateRequest) (string, error) {
 		return "", denyf("", LabelProject,
 			"request claims project %q, this proxy serves project %q", got, project.Name)
 	}
-	if err := checkOneOff(req.Labels); err != nil {
+	// The one-off label decides which command is being performed, and narrows what this
+	// proxy serves rather than proving that Compose made the request.
+	var command string
+	switch req.Labels[LabelOneoff] {
+	case oneoffLabelValue:
+		command = commandRun
+	case serviceLabelValue:
+		command = commandUp
+	default:
+		return "", denyf("", LabelOneoff,
+			"container creation is limited to one-off containers (run) and service containers (up)")
+	}
+	if err := p.commands.check(command); err != nil {
 		return "", err
 	}
 	serviceName := req.Labels[LabelService]
@@ -50,18 +70,24 @@ func (p *Policy) matchCreate(req *container.CreateRequest) (string, error) {
 	return service.Name, nil
 }
 
-// checkOneOff requires the label Compose sets for a one-off container. A client
-// chooses its own labels, so the label narrows what this proxy serves rather
-// than proving where the request came from.
-func checkOneOff(labels map[string]string) error {
-	if !isOneOff(labels) {
-		return deny("", "", "container creation is limited to one-off containers")
-	}
-	return nil
-}
-
 func isOneOff(labels map[string]string) bool {
 	return labels[LabelOneoff] == oneoffLabelValue
+}
+
+func (p *Policy) checkContainerName(name, service string, labels map[string]string) error {
+	number := labels[LabelContainerNumber]
+	if number == "" {
+		number = "1"
+	}
+	want := p.project.Name + "-" + service + "-" + number
+	if declared, err := compose.Service(p.project, service); err == nil && declared.ContainerName != "" {
+		want = declared.ContainerName
+	}
+	if name != want {
+		return denyf("", "name",
+			"compose names this container %q, the request asks for %q", want, name)
+	}
+	return nil
 }
 
 // matchExistingContainer requires the project label and matching security state, since

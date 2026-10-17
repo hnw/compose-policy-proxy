@@ -95,15 +95,26 @@ func inspectOf(
 	return insp
 }
 
-// stubInspector is an Engine that knows a fixed set of containers and no exec
-// instances. Any other identifier is unknown to it, which is what an unreadable
+// stubInspector is an Engine that knows a fixed set of containers and networks and no
+// exec instances. Any other identifier is unknown to it, which is what an unreadable
 // resource looks like.
-type stubInspector map[string]container.InspectResponse
+type stubInspector struct {
+	containers map[string]container.InspectResponse
+	networks   map[string]network.Inspect
+}
 
 func (s stubInspector) InspectContainer(_ context.Context, id string) (container.InspectResponse, error) {
-	insp, ok := s[id]
+	insp, ok := s.containers[id]
 	if !ok {
 		return container.InspectResponse{}, errors.New("no such container")
+	}
+	return insp, nil
+}
+
+func (s stubInspector) InspectNetwork(_ context.Context, id string) (network.Inspect, error) {
+	insp, ok := s.networks[id]
+	if !ok {
+		return network.Inspect{}, errors.New("no such network")
 	}
 	return insp, nil
 }
@@ -117,7 +128,11 @@ func inspectPolicy(project *types.Project, insp container.InspectResponse) *Poli
 }
 
 func policyFor(project *types.Project, insp container.InspectResponse, commands Commands) *Policy {
-	return &Policy{project: project, inspect: stubInspector{containerID: insp}, commands: commands}
+	return &Policy{
+		project:  project,
+		inspect:  stubInspector{containers: map[string]container.InspectResponse{containerID: insp}},
+		commands: commands,
+	}
 }
 
 // request builds the request a client sends, as the proxy receives it. A URL
@@ -157,10 +172,6 @@ func TestControlIsGrantedToOneOffContainersOnly(t *testing.T) {
 		},
 		{
 			name: "killing a container labelled oneoff false", method: "POST", path: "/kill",
-			prepare: labelledFalse,
-		},
-		{
-			name: "removing a service container", method: "DELETE",
 			prepare: labelledFalse,
 		},
 		{
@@ -236,10 +247,22 @@ func TestOwnershipDeniesForeignProject(t *testing.T) {
 func TestOwnershipDeniesUnknownService(t *testing.T) {
 	project, _, insp := inspectFixture()
 	insp.Config.Labels[LabelService] = "not-in-this-project"
+	p := inspectPolicy(&project, insp)
 
-	_, err := inspect(t, inspectPolicy(&project, insp))
-	if err == nil {
-		t.Fatal("a container naming an unknown service was accepted")
+	for _, req := range []struct{ method, path string }{
+		{"GET", "/v1.51/containers/" + containerID + "/json"},
+		{"DELETE", "/v1.51/containers/" + containerID + "?force=1"},
+	} {
+		t.Run(req.method, func(t *testing.T) {
+			_, err := p.Authorize(t.Context(), request(t, req.method, req.path))
+			pe, ok := Inspect(err)
+			if !ok {
+				t.Fatalf("a container naming an unknown service was %s", req.method)
+			}
+			if pe.Field != LabelService {
+				t.Errorf("field = %q, want %q (%s)", pe.Field, LabelService, pe.Detail)
+			}
+		})
 	}
 }
 
@@ -434,5 +457,82 @@ func TestOwnershipToleratesDaemonMACField(t *testing.T) {
 	insp.Config.MacAddress = "02:42:ac:1e:00:0a" //nolint:staticcheck // the deprecated field is the subject of the test
 	if _, err := inspect(t, inspectPolicy(&project, insp)); err != nil {
 		t.Fatalf("the daemon's container-wide MAC field should be tolerated, got %v", err)
+	}
+}
+
+func TestRenameOnlyConfirmsTheComposeContainerName(t *testing.T) {
+	cases := []struct {
+		name          string
+		containerName string
+		query         string
+		want          bool
+	}{
+		{name: "the name compose gives it", query: "?name=demo-app-2", want: true},
+		{name: "another container number", query: "?name=demo-app-1"},
+		{name: "the name of a one-off container", query: "?name=demo-app-run-abc123"},
+		{name: "a name of another project", query: "?name=someone-elses-app"},
+		{name: "no name at all", query: ""},
+		{name: "a container_name", containerName: "app-instance", query: "?name=app-instance", want: true},
+		{name: "another name beside a container_name", containerName: "app-instance", query: "?name=demo-app-2"},
+		{name: "the standard name beside a container_name", containerName: "app-instance", query: "?name=demo-app-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			project, service, insp := inspectFixture()
+			service.ContainerName = tc.containerName
+			project.Services["app"] = service
+			insp.Config.Labels[LabelOneoff] = serviceLabelValue
+			insp.Config.Labels[LabelContainerNumber] = "2"
+			p := policyFor(&project, insp, DefaultCommands())
+
+			_, err := p.Authorize(t.Context(),
+				request(t, "POST", "/v1.51/containers/"+containerID+"/rename"+tc.query))
+			if tc.want {
+				if err != nil {
+					t.Fatalf("rename%s must be allowed, got %v", tc.query, err)
+				}
+				return
+			}
+			pe, ok := Inspect(err)
+			if !ok {
+				t.Fatalf("rename%s was allowed", tc.query)
+			}
+			if pe.Field != "name" {
+				t.Errorf("field = %q, want name (%s)", pe.Field, pe.Detail)
+			}
+		})
+	}
+}
+
+func TestContainerRemovalRefusesOptionsThatActOnSomethingElse(t *testing.T) {
+	project, _, insp := inspectFixture()
+	insp.Config.Labels[LabelOneoff] = serviceLabelValue
+	p := inspectPolicy(&project, insp)
+
+	cases := []struct {
+		query string
+		want  bool
+	}{
+		{query: "", want: true},
+		{query: "?force=1", want: true},
+		{query: "?force=1&v=false", want: true},
+		{query: "?force=1&v=1"},
+		{query: "?force=1&link=true"},
+		{query: "?force=1&v=sometimes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			_, err := p.Authorize(t.Context(),
+				request(t, "DELETE", "/v1.51/containers/"+containerID+tc.query))
+			if tc.want {
+				if err != nil {
+					t.Fatalf("DELETE %s must be allowed, got %v", containerID+tc.query, err)
+				}
+				return
+			}
+			if _, ok := Inspect(err); !ok {
+				t.Fatalf("DELETE %s was allowed", containerID+tc.query)
+			}
+		})
 	}
 }

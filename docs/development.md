@@ -51,6 +51,10 @@ The following depend on observed upstream behavior and should be revisited on up
 | Inspect defaults | Normalized fields do not create false policy mismatches |
 | Exec inspect | `ProcessConfig` reports privilege and effective user; omitted privilege fields fail closed |
 | List filters | Engine's regex/name and label filter semantics remain as expected |
+| Container rename | `up` creates a container under a temporary name, then renames it to the `container_name` of the service, or to `<project>-<service>-<number>` |
+| Network identifiers | `down` inspects and removes a network by the identifier the Engine assigned, not by its name |
+| Network labels | Compose writes `com.docker.compose.network=<key>` on every network it creates, and matches a project label plus that key before removing one |
+| Service container labels | `up` labels a service container `com.docker.compose.oneoff=False` and `com.docker.compose.container-number` |
 
 ## Building the container image
 
