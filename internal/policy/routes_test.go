@@ -31,6 +31,8 @@ func TestResolveAllowlistedEndpoints(t *testing.T) {
 		{"/v1.51/containers/abc", "/containers/{id}", "v1.51", "abc"},
 		{"/v1.51/images/alpine:3.20/json", "/images/{name}/json", "v1.51", "alpine:3.20"},
 		{"/v1.51/images/alpine/json", "/images/{name}/json", "v1.51", "alpine"},
+		{"/v1.51/images/ghcr.io/hnw/compose-policy-proxy:latest/json", "/images/{name}/json", "v1.51",
+			"ghcr.io/hnw/compose-policy-proxy:latest"},
 		{"/v1.51/images/create", "/images/create", "v1.51", ""},
 		{"/v1.51/networks", "/networks", "v1.51", ""},
 		{"/v1.51/networks/demo_frontend", "/networks/{id}", "v1.51", "demo_frontend"},
@@ -71,6 +73,7 @@ func TestResolveRejectsEverythingElse(t *testing.T) {
 		"/v1.51/build",
 		"/v1.51/images/prune",
 		"/v1.51/images/alpine/tag",
+		"/v1.51/images/ghcr.io/hnw/compose-policy-proxy:latest/tag",
 		"/v1.51/networks/demo/disconnect",
 		"/v1.51/networks/demo/connect",
 		"/v1.51/events",
@@ -183,6 +186,7 @@ func TestResourceShapedPathsAreRefusedByOwnership(t *testing.T) {
 		"/v1.51/networks/prune",
 		"/v1.51/volumes/prune",
 		"/v1.51/volumes/someone_elses",
+		"/v1.51/images/ghcr.io/other/undeclared:latest/json",
 	} {
 		op, err := resolve(path)
 		if err != nil {

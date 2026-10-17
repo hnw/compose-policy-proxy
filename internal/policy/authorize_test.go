@@ -32,11 +32,10 @@ func demoProject() *types.Project {
 		WorkingDir: "/opt/app",
 		Networks:   types.Networks{"frontend": {Name: "demo_frontend"}},
 		Volumes:    types.Volumes{"cache": {Name: "demo_cache"}},
-		Services: types.Services{"app": {
-			Name:     "app",
-			Image:    "alpine:3.20",
-			Networks: map[string]*types.ServiceNetworkConfig{"frontend": {}},
-		}},
+		Services: types.Services{
+			"app":  {Name: "app", Image: "alpine:3.20", Networks: map[string]*types.ServiceNetworkConfig{"frontend": {}}},
+			"tool": {Name: "tool", Image: "ghcr.io/hnw/compose-policy-proxy:latest"},
+		},
 	}
 }
 
@@ -120,6 +119,7 @@ func TestAuthorizedRequestsReachTheDecision(t *testing.T) {
 		{"container list", "GET", "/v1.51/containers/json?filters=" +
 			url.QueryEscape(`{"label":{"com.docker.compose.project=demo":true}}`), ""},
 		{"image inspect", "GET", "/v1.51/images/alpine:3.20/json", ""},
+		{"image inspect from a registry", "GET", "/v1.51/images/ghcr.io/hnw/compose-policy-proxy:latest/json", ""},
 		{"image pull", "POST", "/v1.51/images/create?fromImage=alpine:3.20", ""},
 		{"network create", "POST", "/v1.51/networks/create", `{
 			"Name":"demo_frontend",

@@ -128,6 +128,17 @@ func resolve(path string) (operation, error) {
 			return operation{Endpoint: pattern, Version: version, Target: segments[1]}, nil
 		}
 	}
+
+	// Image references may contain slashes, unlike other resource names.
+	if segments[0] == "images" {
+		for i := 2; i < len(segments); i++ {
+			pattern := "/images/{name}/" + strings.Join(segments[i:], "/")
+			if _, ok := allowlist[pattern]; ok {
+				return operation{Endpoint: pattern, Version: version, Target: strings.Join(segments[1:i], "/")}, nil
+			}
+		}
+	}
+
 	return operation{}, denyf("", "",
 		"docker API endpoint %q is not allowed", rest)
 }
