@@ -17,22 +17,27 @@ var allowlist = map[string][]string{
 	"/version": {"GET"},
 	"/info":    {"GET"},
 
-	// Containers. Create, list, inspect, and the lifecycle operations a one-off
-	// run performs. Every {id} route requires ownership.
-	"/containers/create":      {"POST"},
-	"/containers/json":        {"GET"},
-	"/containers/{id}":        {"DELETE", "GET"},
-	"/containers/{id}/json":   {"GET"},
-	"/containers/{id}/attach": {"POST"},
-	"/containers/{id}/start":  {"POST"},
-	"/containers/{id}/wait":   {"POST"},
-	"/containers/{id}/stop":   {"POST"},
-	"/containers/{id}/kill":   {"POST"},
-	"/containers/{id}/resize": {"POST"},
+	// Container operations. Every {id} route requires ownership.
+	"/containers/create":       {"POST"},
+	"/containers/json":         {"GET"},
+	"/containers/{id}":         {"DELETE", "GET"},
+	"/containers/{id}/json":    {"GET"},
+	"/containers/{id}/attach":  {"POST"},
+	"/containers/{id}/start":   {"POST"},
+	"/containers/{id}/wait":    {"POST"},
+	"/containers/{id}/stop":    {"POST"},
+	"/containers/{id}/restart": {"POST"},
+	"/containers/{id}/kill":    {"POST"},
+	"/containers/{id}/resize":  {"POST"},
+	logsEndpoint:               {"GET"},
 
 	// Images. Inspect and pull, both restricted to an image the project declares.
 	"/images/create":      {"POST"},
 	"/images/{name}/json": {"GET"},
+
+	// Events, restricted to the project's own containers, which the event watch of a
+	// followed log stream needs.
+	"/events": {"GET"},
 
 	// Networks. Inspect and list, scoped to declared networks, plus create.
 	"/networks":        {"GET"},
@@ -213,6 +218,11 @@ func splitMinor(v string) (major, minor int, err error) {
 	}
 	return major, minor, nil
 }
+
+// logsEndpoint reads what a container wrote rather than acting on it. It is not one of
+// the read-only operations below, because the output can carry the application's
+// secrets, so it is decided by the `logs` command for every kind of container.
+const logsEndpoint = "/containers/{id}/logs"
 
 // readOnlyOperations are the only container operations allowed on a protected
 // service. What counts is the effect on the container, not the HTTP method.

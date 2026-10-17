@@ -3,7 +3,9 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -110,6 +112,113 @@ func TestNamedResourceScope(t *testing.T) {
 		if _, err := p.checkListScope(kindNetwork, f); err == nil {
 			t.Errorf("filters %q should be denied", f)
 		}
+	}
+}
+
+// The event watch beside a followed log stream observes events, which name other
+// projects' activity unless the filters say otherwise. Each key the proxy decides on
+// must name exactly the authorized value, and only those values are forwarded.
+func TestEventScopeIsPinnedToTheProject(t *testing.T) {
+	project := scopedProject()
+	const (
+		projectLabel = `"label":{"com.docker.compose.project=demo":true}`
+		container    = `"type":{"container":true}`
+	)
+	allowed := []struct {
+		filters string
+		why     string
+	}{
+		{"{" + projectLabel + "," + container + "}", "exactly the authorized conditions"},
+		{`{"label":["com.docker.compose.project=demo"],"type":["container"]}`, "the array form of both keys"},
+		{"{" + projectLabel + "," + container + `,"container":"abc"}`, "one more container of the project"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.why, func(t *testing.T) {
+			pinned, err := checkEventScope(project, tc.filters)
+			if err != nil {
+				t.Fatalf("filters %q should be accepted, got %v", tc.filters, err)
+			}
+			want := `{"label":["com.docker.compose.project=demo"],"type":["container"]}`
+			if pinned != want {
+				t.Errorf("forwarded filters = %q, want %q", pinned, want)
+			}
+		})
+	}
+
+	denied := []struct {
+		filters string
+		why     string
+	}{
+		{"", "no filters at all"},
+		{"{}", "empty filters"},
+		{"not json", "undecodable filters"},
+		{"{" + container + "}", "no project label"},
+		{"{" + projectLabel + "}", "no event type"},
+		{`{"label":{"com.docker.compose.project=someone-else":true},"type":{"container":true}}`, "another project"},
+		{`{"label":{"com.docker.compose.project=demo":true,"com.docker.compose.project=someone-else":true},` +
+			`"type":{"container":true}}`, "two projects"},
+		{`{"label":["com.docker.compose.project=demo","com.docker.compose.service=app"],"type":{"container":true}}`,
+			"a second value beside the project label"},
+		{`{"label":{"com.docker.compose.project=demo":true},"type":{"image":true}}`, "another event type"},
+		{`{"label":{"com.docker.compose.project=demo":true},"type":{"container":true,"image":true}}`,
+			"container events and more"},
+	}
+	for _, tc := range denied {
+		t.Run(tc.why, func(t *testing.T) {
+			if pinned, err := checkEventScope(project, tc.filters); err == nil {
+				t.Errorf("filters %q should be denied (%s), forwarded %q", tc.filters, tc.why, pinned)
+			}
+		})
+	}
+}
+
+// The event watch exists to keep a followed log stream open, so `logs` authorizes it and
+// no other command does.
+func TestEventStreamNeedsTheLogsCommand(t *testing.T) {
+	project, _, _ := fixture()
+	filters := `{"label":{"com.docker.compose.project=` + project.Name + `":true},"type":{"container":true}}`
+
+	for _, tc := range []struct {
+		name     string
+		commands Commands
+		want     bool
+	}{
+		{"logs", Commands{commandLogs}, true},
+		{"every command", DefaultCommands(), true},
+		{"run", Commands{commandRun}, false},
+		{"start,stop,restart,pull", Commands{commandStart, commandStop, commandRestart, commandPull}, false},
+		{"empty", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := New(Config{
+				Project:         project,
+				DockerHost:      hostSocket,
+				Listen:          proxySocket,
+				Engine:          stubInspector{},
+				AllowedCommands: tc.commands,
+			})
+			if err != nil {
+				t.Fatalf("build policy: %v", err)
+			}
+			path := "/v1.51/events?filters=" + url.QueryEscape(filters)
+			decision, err := p.Authorize(t.Context(), request(t, "GET", path))
+			if tc.want {
+				if err != nil {
+					t.Fatalf("the event watch with %v must be allowed, got %v", tc.commands, err)
+				}
+				if decision.Endpoint != "/events" {
+					t.Fatalf("endpoint = %q, want /events", decision.Endpoint)
+				}
+				return
+			}
+			pe, ok := Inspect(err)
+			if !ok {
+				t.Fatalf("the event watch with %v must be refused, got %v", tc.commands, err)
+			}
+			if want := "compose logs is not available"; !strings.Contains(pe.Detail, want) {
+				t.Errorf("the refusal names %q, got %q", want, pe.Detail)
+			}
+		})
 	}
 }
 

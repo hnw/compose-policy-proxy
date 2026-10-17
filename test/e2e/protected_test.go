@@ -35,6 +35,8 @@ func newProtectedProject(t *testing.T) (*project, *harness) {
 	p := newProject(t, renderProtected(protectedCompose, testImage, dockerHost(t)),
 		map[string]string{"socket": "stand-in for the engine socket"})
 	t.Cleanup(func() { p.cleanup(t) })
+	// Every command is allowed by default, so a refusal in these tests can only be the
+	// protected rule.
 	return p, startProxy(t, p)
 }
 
@@ -74,6 +76,8 @@ func TestProtectedContainerCannotBeControlledThroughTheProxy(t *testing.T) {
 
 	denied := []struct{ method, path string }{
 		{"POST", "/containers/" + id + "/stop"},
+		{"POST", "/containers/" + id + "/restart"},
+		{"GET", "/containers/" + id + "/logs?stdout=1&stderr=1"},
 		{"DELETE", "/containers/" + id + "?force=1"},
 		{"POST", "/containers/" + id + "/attach?stream=1&stdout=1"},
 	}

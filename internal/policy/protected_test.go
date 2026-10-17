@@ -188,6 +188,8 @@ func TestProtectedServiceFieldMismatchIsStillReportedAsSuch(t *testing.T) {
 
 // The stub Engine is keyed by service name, so "containers/proxy" addresses the
 // protected container. The identifier is arbitrary, ownership comes from the report.
+// Every command is allowed, so each refusal below is the protected rule rather than the
+// missing command.
 func TestProtectedContainerOperations(t *testing.T) {
 	p, _, _ := protectedFixture()
 
@@ -202,6 +204,8 @@ func TestProtectedContainerOperations(t *testing.T) {
 		{"wait", "POST", "/wait", true},
 		{"start", "POST", "/start", false},
 		{"stop", "POST", "/stop", false},
+		{"restart", "POST", "/restart", false},
+		{"logs", "GET", "/logs", false},
 		{"kill", "POST", "/kill", false},
 		{"remove", "DELETE", "", false},
 		{"attach", "POST", "/attach", false},

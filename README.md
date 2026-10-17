@@ -70,14 +70,14 @@ See the [example README](examples/quickstart/README.md) for denied-request examp
 
 ## Supported operations
 
-The proxy supports the Compose commands `run`, `start`, and `stop`.
+The proxy supports the Compose commands `run`, `start`, `stop`, `restart`, `pull`, and `logs`.
 
-`run` creates and controls one-off containers. `start` and `stop` operate on existing service containers, which must be created outside the proxy. Other control operations on regular service containers are not permitted.
+`run` creates and controls one-off containers. `start`, `stop`, and `restart` operate on existing service containers, which must be created outside the proxy. Other control operations on regular service containers are not permitted.
 
-`--allow-command` narrows which of the three commands are available. It defaults to all of them:
+`--allow-command` selects which of these commands are available. It defaults to all of them, and naming it replaces that default:
 
 ```console
-# All three commands (default)
+# Every supported command (default)
 compose-policy-proxy
 
 # Allow only one-off containers
@@ -87,13 +87,15 @@ compose-policy-proxy --allow-command=run
 compose-policy-proxy --allow-command=start,stop
 ```
 
-Other Compose workflows, including `up`, `down`, `exec`, `logs`, `build`, and `push`, are not supported through the restricted socket.
+`pull` fetches only images the Compose project declares. `logs` returns whatever an application printed, which may include its secrets, so it has its own permission and `run` alone does not grant it.
+
+Other Compose workflows, including `up`, `down`, `exec`, `build`, and `push`, are not supported through the restricted socket.
 
 The proxy itself must be managed directly from the host.
 
 ## Security model
 
-The proxy treats a client with access to its socket as untrusted, and enforces the security-sensitive settings the Compose project declares. Operations it does not support are denied by default, and a service that mounts the host Docker socket itself cannot be created or controlled through the proxy.
+The proxy treats a client with access to its socket as untrusted, and enforces the security-sensitive settings the Compose project declares. Operations it does not support are denied by default, and a service that mounts the host Docker socket itself cannot be created or controlled through the proxy, and its logs are not readable.
 
 `--allow-command` selects which of the supported Compose commands are authorized. It is not a way to authenticate the client asking for them: anyone who can reach the socket gets whatever commands are configured.
 
@@ -122,7 +124,7 @@ The Compose project is loaded at startup. Restart the proxy after changing its c
 | `--listen` | `/run/compose-policy-proxy/docker.sock` | Restricted socket path |
 | `--docker-host` | `/var/run/docker.sock` | Host Docker socket |
 | `--socket-mode` | `0660` | Restricted socket permissions |
-| `--allow-command` | `run,start,stop` | Compose commands to allow |
+| `--allow-command` | `run,start,stop,restart,pull,logs` | Compose commands to allow |
 | `--log-format` | `text` | `text` or `json` |
 | `--log-level` | `info` | Logging verbosity |
 

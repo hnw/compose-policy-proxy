@@ -17,6 +17,13 @@ func isStreamingEndpoint(endpoint string) bool {
 	return strings.HasSuffix(endpoint, "/attach")
 }
 
+// A followed log stream and the event watch beside it are ordinary HTTP responses whose
+// bodies stay open after the headers, so they are relayed chunk by chunk rather than
+// held until the stream ends.
+func isIncrementalEndpoint(endpoint string) bool {
+	return endpoint == "/containers/{id}/logs" || endpoint == "/events"
+}
+
 type dialer func(ctx context.Context) (net.Conn, error)
 
 func (p *Proxy) forwardStream(w http.ResponseWriter, r *http.Request, body []byte) {

@@ -6,6 +6,9 @@ import (
 	"regexp"
 	"slices"
 
+	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/docker/docker/api/types/events"
+
 	"github.com/hnw/compose-policy-proxy/internal/compose"
 )
 
@@ -105,6 +108,52 @@ func pinNameFilter(byKey map[string]json.RawMessage, values []string) (string, e
 	out, err := json.Marshal(pinned)
 	if err != nil {
 		return "", denyf("", "", "list filters cannot be re-encoded: %v", err)
+	}
+	return string(out), nil
+}
+
+// checkEventScope decides what an event stream may observe, and returns the filters to
+// forward. `docker compose logs --follow` watches the project's own containers for ones
+// created while it follows, so it names that project and the container type and nothing
+// wider.
+func checkEventScope(project *types.Project, filters string) (string, error) {
+	if filters == "" {
+		return "", deny("", "filters",
+			"event request carries no filters, so it would observe every event")
+	}
+	var byKey map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(filters), &byKey); err != nil {
+		return "", denyf("", "filters", "event filters cannot be decoded: %v", err)
+	}
+
+	// Each key the policy decides on must name exactly one value. The engine ORs the
+	// values of the type key and ANDs the values of the label key, so a second value on
+	// either is not the scope this proxy authorized.
+	required := []struct{ key, value string }{
+		{"label", LabelProject + "=" + project.Name},
+		{"type", string(events.ContainerEventType)},
+	}
+	pinned := map[string][]string{}
+	for _, want := range required {
+		raw, ok := byKey[want.key]
+		if !ok {
+			return "", denyf("", want.key, "event request must filter on %s=%s", want.key, want.value)
+		}
+		values, err := decodeFilterValues(want.key, raw)
+		if err != nil {
+			return "", err
+		}
+		if len(values) != 1 || values[0] != want.value {
+			return "", denyf("", want.key, "event %s filter must name only %q", want.key, want.value)
+		}
+		pinned[want.key] = []string{want.value}
+	}
+
+	// Only the authorized conditions are forwarded, so no other key the client sent can
+	// widen what the stream observes.
+	out, err := json.Marshal(pinned)
+	if err != nil {
+		return "", denyf("", "filters", "event filters cannot be re-encoded: %v", err)
 	}
 	return string(out), nil
 }

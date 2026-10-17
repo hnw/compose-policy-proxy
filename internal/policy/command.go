@@ -8,14 +8,19 @@ import (
 
 // The Compose commands this proxy supports, named as the CLI accepts them.
 const (
-	commandRun   = "run"
-	commandStart = "start"
-	commandStop  = "stop"
+	commandRun     = "run"
+	commandStart   = "start"
+	commandStop    = "stop"
+	commandRestart = "restart"
+	commandPull    = "pull"
+	commandLogs    = "logs"
 )
 
-// supportedCommands is every command the policy knows how to authorize. It is also the
+// supportedCommands is every command the policy knows how to authorize, and is also the
 // default, so a command added here is allowed unless an operator narrows the set.
-var supportedCommands = []string{commandRun, commandStart, commandStop}
+var supportedCommands = []string{
+	commandRun, commandStart, commandStop, commandRestart, commandPull, commandLogs,
+}
 
 // Commands is the set of Compose commands a client may perform, as configured by
 // --allow-command. It is a startup-time setting like the Compose project, so changing
@@ -62,17 +67,30 @@ func (c Commands) check(command string) error {
 	return denyf("", "", "docker compose %s is not available through this proxy", command)
 }
 
+// checkAny authorizes an operation that any one of the named commands performs. The
+// refusal names the first of them, which is the command a client would be asking for.
+func (c Commands) checkAny(commands ...string) error {
+	for _, command := range commands {
+		if slices.Contains(c, command) {
+			return nil
+		}
+	}
+	return c.check(commands[0])
+}
+
 // runOnlyOperations are the operations `docker compose run` performs that no other
 // supported command does. They are named rather than derived, so a create added later
 // has to be classified instead of following the ones already here.
 var runOnlyOperations = map[string]bool{
 	"/containers/create": true,
-	"/images/create":     true,
 	"/networks/create":   true,
 	"/volumes/create":    true,
 }
 
+// serviceContainerOperations are the operations an ordinary service container answers to
+// by the command of the same name. A one-off container belongs to `run` instead.
 var serviceContainerOperations = map[string]string{
-	"/containers/{id}/start": commandStart,
-	"/containers/{id}/stop":  commandStop,
+	"/containers/{id}/start":   commandStart,
+	"/containers/{id}/stop":    commandStop,
+	"/containers/{id}/restart": commandRestart,
 }

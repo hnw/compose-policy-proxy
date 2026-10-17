@@ -26,9 +26,12 @@ func TestResolveAllowlistedEndpoints(t *testing.T) {
 		{"/v1.51/containers/abc/start", "/containers/{id}/start", "v1.51", "abc"},
 		{"/v1.51/containers/abc/wait", "/containers/{id}/wait", "v1.51", "abc"},
 		{"/v1.51/containers/abc/stop", "/containers/{id}/stop", "v1.51", "abc"},
+		{"/v1.51/containers/abc/restart", "/containers/{id}/restart", "v1.51", "abc"},
 		{"/v1.51/containers/abc/kill", "/containers/{id}/kill", "v1.51", "abc"},
+		{"/v1.51/containers/abc/logs", "/containers/{id}/logs", "v1.51", "abc"},
 		{"/v1.51/containers/abc/resize", "/containers/{id}/resize", "v1.51", "abc"},
 		{"/v1.51/containers/abc", "/containers/{id}", "v1.51", "abc"},
+		{"/v1.51/events", "/events", "v1.51", ""},
 		{"/v1.51/images/alpine:3.20/json", "/images/{name}/json", "v1.51", "alpine:3.20"},
 		{"/v1.51/images/alpine/json", "/images/{name}/json", "v1.51", "alpine"},
 		{"/v1.51/images/ghcr.io/hnw/compose-policy-proxy:latest/json", "/images/{name}/json", "v1.51",
@@ -69,14 +72,12 @@ func TestResolveRejectsEverythingElse(t *testing.T) {
 		"/v1.51/containers/abc/rename",
 		"/v1.51/containers/abc/update",
 		"/v1.51/containers/abc/archive",
-		"/v1.51/containers/abc/logs",
 		"/v1.51/build",
 		"/v1.51/images/prune",
 		"/v1.51/images/alpine/tag",
 		"/v1.51/images/ghcr.io/hnw/compose-policy-proxy:latest/tag",
 		"/v1.51/networks/demo/disconnect",
 		"/v1.51/networks/demo/connect",
-		"/v1.51/events",
 		"/v1.51/services",
 		"/v1.51/swarm/join",
 		"/v1.51/plugins/pull",
@@ -127,6 +128,8 @@ func TestCheckMethod(t *testing.T) {
 		{"/containers/{id}", "POST", false},
 		{"/images/{name}/json", "GET", true},
 		{"/images/{name}/json", "DELETE", false},
+		{"/containers/{id}/logs", "GET", true},
+		{"/containers/{id}/logs", "POST", false},
 		{"/_ping", "HEAD", true},
 		{"/_ping", "POST", false},
 	}
@@ -214,6 +217,7 @@ func TestResourceShapedPathsAreRefusedByOwnership(t *testing.T) {
 // TestEveryAllowlistedEndpointHasARule pins the fail-closed default from the
 // allowlist side, where an endpoint without a decision rule is refused.
 func TestEveryAllowlistedEndpointHasARule(t *testing.T) {
+	// Every command is allowed, so a refusal below can only come from a missing rule.
 	p := &Policy{project: &types.Project{Name: "demo"}, inspect: stubInspector{}, commands: DefaultCommands()}
 
 	for endpoint := range allowlist {
@@ -229,7 +233,7 @@ func TestEveryAllowlistedEndpointHasARule(t *testing.T) {
 func TestEndpointWithoutARuleIsRefused(t *testing.T) {
 	p := &Policy{project: &types.Project{Name: "demo"}, inspect: stubInspector{}}
 
-	_, _, _, err := p.decide(t.Context(), operation{Endpoint: "/events", Target: ""}, &Request{URL: &url.URL{}})
+	_, _, _, err := p.decide(t.Context(), operation{Endpoint: "/build", Target: ""}, &Request{URL: &url.URL{}})
 	if !errors.Is(err, errUnhandledEndpoint) {
 		t.Fatalf("an endpoint no rule covers was not refused: %v", err)
 	}
@@ -246,10 +250,13 @@ func TestAllowlistIsMinimal(t *testing.T) {
 		"/containers/{id}/attach",
 		"/containers/{id}/json",
 		"/containers/{id}/kill",
+		"/containers/{id}/logs",
 		"/containers/{id}/resize",
+		"/containers/{id}/restart",
 		"/containers/{id}/start",
 		"/containers/{id}/stop",
 		"/containers/{id}/wait",
+		"/events",
 		"/images/create",
 		"/images/{name}/json",
 		"/info",

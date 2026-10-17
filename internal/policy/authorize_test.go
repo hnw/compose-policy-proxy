@@ -274,10 +274,11 @@ func TestOwnershipCannotBeFakedWithClientControlledLabels(t *testing.T) {
 	containerOf.Config.Labels[policy.LabelProject] = "someone-elses-project"
 	stub["abc"] = containerOf
 	p, err := policy.New(policy.Config{
-		Project:         project,
-		DockerHost:      dockerSocket,
-		Listen:          listenSocket,
-		Engine:          stub,
+		Project:    project,
+		DockerHost: dockerSocket,
+		Listen:     listenSocket,
+		Engine:     stub,
+		// Every command is allowed, so a refusal below can only come from ownership.
 		AllowedCommands: policy.DefaultCommands(),
 	})
 	if err != nil {
@@ -286,7 +287,9 @@ func TestOwnershipCannotBeFakedWithClientControlledLabels(t *testing.T) {
 
 	for _, op := range []struct{ method, path string }{
 		{http.MethodGet, "/v1.51/containers/abc/json"},
+		{http.MethodGet, "/v1.51/containers/abc/logs?stdout=1"},
 		{http.MethodPost, "/v1.51/containers/abc/stop"},
+		{http.MethodPost, "/v1.51/containers/abc/restart"},
 		{http.MethodPost, "/v1.51/containers/abc/attach"},
 		{http.MethodPost, "/v1.51/containers/abc/resize?h=24&w=80"},
 		{http.MethodDelete, "/v1.51/containers/abc"},

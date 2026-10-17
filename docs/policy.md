@@ -8,17 +8,22 @@ The field inventory in `internal/policy/inventory_test.go` records whether each 
 
 ## Command selection
 
-`--allow-command` selects which Compose commands the proxy authorizes. It defaults to every supported command, `run,start,stop`, and a value given on the command line replaces that default rather than adding to it.
+`--allow-command` selects which Compose commands the proxy authorizes. It defaults to every supported command, `run,start,stop,restart,pull,logs`, and a value given on the command line replaces that default rather than adding to it.
 
 | Command | Docker API operations it authorizes |
 | --- | --- |
-| `run` | one-off container create, and `start`, `stop`, `kill`, `remove`, `attach`, and `resize` of that one-off container; the declared image pull, network create, and volume create that `run` needs |
+| `run` | one-off container create, and `start`, `stop`, `kill`, `remove`, `attach`, `restart`, and `resize` of that one-off container; the declared image pull, network create, and volume create that `run` needs |
 | `start` | `POST /containers/{id}/start` on a service container of the project |
 | `stop` | `POST /containers/{id}/stop` on a service container of the project |
+| `restart` | `POST /containers/{id}/restart` on a service container of the project |
+| `pull` | `POST /images/create` for an image the project declares |
+| `logs` | `GET /containers/{id}/logs` on a service container or one-off container of the project, and the `GET /events` stream that `docker compose logs --follow` opens |
 
 An unsupported name is refused at startup, a repeated name changes nothing, and an empty list authorizes no command at all.
 
-The setting narrows what is authorized and nothing else. Every operation still has to pass the authorization conditions below: project and service ownership read from the Engine, the [configuration checks](#container-configuration), and the [protected service rule](#protected-services). Read-only operations are available under the existing conditions whatever the setting says, since `--allow-command` names no endpoint that observes without acting.
+`restart` requires its own permission; `start` and `stop` do not imply it.
+
+The setting narrows what is authorized and nothing else. Every operation still has to pass the authorization conditions below: project and service ownership read from the Engine, the [configuration checks](#container-configuration), and the [protected service rule](#protected-services). Basic read-only operations remain available independently of `--allow-command`. Log access is an exception and requires `logs` permission.
 
 `--allow-command` is not authentication. It does not decide which client is asking, so every client holding the socket gets the commands it names.
 
@@ -50,7 +55,9 @@ For an operation targeting an existing container, the proxy inspects it through 
 
 The proxy does not trust labels supplied with the operation. It uses the labels and settings reported by the Engine. It keeps no container ownership database, so the same checks apply after a proxy restart.
 
-Read-only operations are available for matching service containers, including normal service containers. Control operations require `com.docker.compose.oneoff=True` in the inspect result, except that a normal service container may be started and stopped by the [commands](#command-selection) of the same name. Control operations are denied for protected services. The [endpoint list](#docker-api-allowlist) identifies the operations in each group.
+Read-only operations are available for matching service containers, including normal service containers. Control operations require `com.docker.compose.oneoff=True` in the inspect result, except that a normal service container may be started, stopped, and restarted by the [commands](#command-selection) of the same name. Control operations are denied for protected services. The [endpoint list](#docker-api-allowlist) identifies the operations in each group.
+
+Reading a container's logs is not among the read-only operations: it is decided by the `logs` command for both service containers and one-off containers, and a protected service's container is refused.
 
 The one-off label restricts which containers a client may control, not how long they can run. A one-off container may run indefinitely or be started again.
 
@@ -131,7 +138,9 @@ Host-dependent fields that Compose can express, including `StorageOpt`, `VolumeD
 
 ## Images, networks, and volumes
 
-Image inspection and pulling are limited to references declared by the Compose project. Image names are normalized for implicit registry, namespace, and tag defaults. Pull requests cannot use `fromSrc`, bulk or multi-image pulls, or undeclared references.
+Image inspection and pulling are limited to references declared by the Compose project. Image names are normalized for implicit registry, namespace, and tag defaults, so a reference containing slashes is compared as a whole. Pull requests cannot use `fromSrc`, bulk or multi-image pulls, or undeclared references.
+
+`POST /images/create` is authorized by `pull` or by `run`, because a pull is both what `docker compose pull` performs and what `run` needs before it can create anything. The image a protected service uses can be pulled like any other declared image: fetching an image is not an operation on that service's container.
 
 Network and volume inspection is limited to names declared in the project, including external resources. Creating a resource requires its resolved name and a matching Compose definition; resources marked `external` cannot be created through the proxy.
 
@@ -146,6 +155,16 @@ Lists have no individual resource to inspect, so requests must be scoped before 
 - Network and volume lists require that project filter or a `name` filter naming a declared resource.
 
 Docker treats a `name` filter as an unanchored regular expression. The proxy replaces an authorized name filter with an escaped, anchored expression so similarly named resources cannot be included. Other filters are preserved because Docker combines different filter keys with AND.
+
+## Event streams
+
+`docker compose logs --follow` also opens an event watch, so that it can follow containers created while it is running. `GET /events` is authorized by `logs` and observes the project's own containers only:
+
+- the `filters` must name `com.docker.compose.project=<project>` and `container`, each as the only value of its key. The engine ORs the values of the `type` key, so a second value there would observe more event types, and ANDs the values of the `label` key, so a second value there describes no container the project has;
+- any other key the client sent is dropped, so only those two conditions reach the Engine;
+- a request without filters, naming another project, or naming another event type is refused.
+
+An event carries the labels, image, and exit code of the containers it names, which the inspect operation already exposes for the project's containers. Events of a protected service's container are within this scope: observing them is not acting on the container.
 
 ## Docker API allowlist
 
@@ -165,11 +184,15 @@ Only the following methods and endpoints are supported. Unknown endpoints, unsup
 /containers/{id}/attach                      POST         one-off control
 /containers/{id}/start                       POST         one-off control, or `start` of a service container
 /containers/{id}/stop                        POST         one-off control, or `stop` of a service container
+/containers/{id}/restart                     POST         one-off control, or `restart` of a service container
 /containers/{id}/kill                        POST         one-off control
 /containers/{id}/resize                      POST         one-off control
+/containers/{id}/logs                        GET          `logs` of any owned container
 
-/images/create                               POST         declared image pull
+/images/create                               POST         declared image pull, by `pull` or `run`
 /images/{name}/json                          GET          declared image inspect
+
+/events                                      GET          project container events, by `logs`
 
 /networks                                    GET          scoped list
 /networks/{id}                               GET          declared network inspect
@@ -182,7 +205,9 @@ Only the following methods and endpoints are supported. Unknown endpoints, unsup
 
 A control operation also requires a matching existing container, an allowed [command](#command-selection), and a service that is not protected. Read-only operations on individual containers require the same ownership and inspect-mode comparison but do not require the one-off label.
 
-Other Docker Compose workflows, including `up`, `down`, `exec`, `logs`, `build`, and `push`, are not supported through this socket.
+A followed log stream and the event watch beside it keep their response bodies open after the headers. They are ordinary HTTP responses rather than a hijacked connection, and their bodies are relayed chunk by chunk so that a client following them receives output as the daemon writes it.
+
+Other Docker Compose workflows, including `up`, `down`, `exec`, `build`, and `push`, are not supported through this socket.
 
 ## Docker API versions
 

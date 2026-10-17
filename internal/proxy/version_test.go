@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+
+	"github.com/hnw/compose-policy-proxy/internal/policy"
 )
 
 func TestServeHTTPCapsTheNegotiatedAPIVersion(t *testing.T) {
@@ -20,7 +22,7 @@ func TestServeHTTPCapsTheNegotiatedAPIVersion(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			socket, _ := testProxyWith(t, demoProject(), newDaemon(t, tc.engine),
-				slog.NewTextHandler(io.Discard, nil))
+				slog.NewTextHandler(io.Discard, nil), policy.DefaultCommands())
 
 			resp := do(t, socket, tc.method, "/_ping", "")
 			defer func() { _ = resp.Body.Close() }()
@@ -50,7 +52,7 @@ func TestServeHTTPCapsTheVersionAnswer(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			socket, _ := testProxyWith(t, demoProject(), newDaemon(t, tc.engine),
-				slog.NewTextHandler(io.Discard, nil))
+				slog.NewTextHandler(io.Discard, nil), policy.DefaultCommands())
 
 			resp := do(t, socket, "GET", "/v1.51/version", "")
 			defer func() { _ = resp.Body.Close() }()

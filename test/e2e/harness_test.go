@@ -315,6 +315,76 @@ func (h *harness) mustCompose(args ...string) string {
 	return out
 }
 
+// followCompose starts a compose command that keeps running, for the streams a client
+// follows. `received` reports what the client has received, `ended` waits briefly and
+// then reports whether the command ended by itself, and `stop` ends it deliberately.
+func (h *harness) followCompose(
+	args ...string,
+) (received func() string, ended func() (bool, error), stop func()) {
+	h.t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "docker", append([]string{"compose"}, args...)...)
+	cmd.Dir = h.project.dir
+	cmd.Env = withEnv(os.Environ(), "DOCKER_HOST", "unix://"+h.socket)
+	out := &syncBuffer{}
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Start(); err != nil {
+		cancel()
+		h.t.Fatalf("start docker compose %s: %v", strings.Join(args, " "), err)
+	}
+	var waitErr error
+	done := make(chan struct{})
+	go func() {
+		waitErr = cmd.Wait()
+		close(done)
+	}()
+	return out.String,
+		func() (bool, error) {
+			select {
+			case <-done:
+				return true, waitErr
+			case <-time.After(2 * time.Second):
+				return false, nil
+			}
+		},
+		func() {
+			cancel()
+			<-done
+		}
+}
+
+// syncBuffer collects what a running command writes while another goroutine reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// startedAt reports when the Engine last started a container, so that a restart is shown
+// as an effect on the container rather than as a command that returned.
+func (h *harness) startedAt(t *testing.T, id string) string {
+	t.Helper()
+	cmd := exec.Command("docker", "inspect", "--format", "{{.State.StartedAt}}", id)
+	cmd.Env = withEnv(os.Environ(), "DOCKER_HOST", "unix://"+h.dockerHost)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("inspect when the container started: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // composeOnEngine runs docker compose against the real Engine rather than the
 // proxy, which is how the containers the proxy later has to judge come to exist.
 func (h *harness) composeOnEngine(args ...string) string {

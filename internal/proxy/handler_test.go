@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/docker/api/types/container"
@@ -220,6 +221,91 @@ func oneOffLabels() string {
 		`"com.docker.compose.oneoff":"True"}`
 }
 
+// A followed log stream keeps the response body open after the headers, so a chunk the
+// daemon writes has to reach the client while the stream is still open.
+func TestForwardBodyFlushesEachChunkOfAStream(t *testing.T) {
+	w := &flushRecorder{header: http.Header{}, flushed: make(chan struct{}, 1)}
+	reader, writer := io.Pipe()
+	relayed := make(chan struct{})
+	go func() {
+		defer close(relayed)
+		forwardBody(w, reader, "/containers/{id}/logs")
+	}()
+
+	if _, err := writer.Write([]byte("first line\n")); err != nil {
+		t.Fatalf("write the first chunk: %v", err)
+	}
+	select {
+	case <-w.flushed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the chunk was not flushed while the stream was still open")
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("end the stream: %v", err)
+	}
+	<-relayed
+
+	if got := w.body.String(); got != "first line\n" {
+		t.Errorf("relayed %q, want the chunk as written", got)
+	}
+
+	// Every other response is copied as before, so nothing else is handed over early.
+	w = &flushRecorder{header: http.Header{}, flushed: make(chan struct{}, 1)}
+	forwardBody(w, strings.NewReader("one answer\n"), "/containers/{id}/json")
+	select {
+	case <-w.flushed:
+		t.Error("a response of known length was flushed chunk by chunk")
+	default:
+	}
+}
+
+// A stream that outlives its client would keep the daemon serving a subscription nobody
+// reads, so leaving has to end it.
+func TestForwardBodyEndsWhenTheClientLeaves(t *testing.T) {
+	abandoned := make(chan struct{})
+	upstream := newDaemonWith(t, "", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("first event\n"))
+		w.(http.Flusher).Flush() //nolint:forcetypeassert // the Engine flushes a stream this way
+		<-r.Context().Done()
+		close(abandoned)
+	})
+	socket, _ := testProxyWith(t, demoProject(), upstream, slog.NewTextHandler(io.Discard, nil),
+		policy.DefaultCommands())
+
+	filters := url.QueryEscape(`{"label":{"com.docker.compose.project=demo":true},"type":{"container":true}}`)
+	resp := do(t, socket, "GET", "/v1.51/events?filters="+filters, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readAll(t, resp))
+	}
+	// Closing before the body ends is what a cancelled follow does.
+	_ = resp.Body.Close()
+
+	select {
+	case <-abandoned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the daemon was still streaming after the client left")
+	}
+}
+
+// flushRecorder reports every flush, since what is under test is when the body was handed
+// over rather than what it said. A ResponseRecorder cannot be watched without racing.
+type flushRecorder struct {
+	header  http.Header
+	body    strings.Builder
+	flushed chan struct{}
+}
+
+func (f *flushRecorder) Header() http.Header         { return f.header }
+func (f *flushRecorder) Write(p []byte) (int, error) { return f.body.Write(p) }
+func (f *flushRecorder) WriteHeader(int)             {}
+
+func (f *flushRecorder) Flush() {
+	select {
+	case f.flushed <- struct{}{}:
+	default:
+	}
+}
+
 func demoProject() *types.Project {
 	return &types.Project{
 		Name:       "demo",
@@ -258,22 +344,29 @@ func (ownedContainers) InspectContainer(_ context.Context, id string) (container
 
 func testProxy(t *testing.T, project *types.Project) (string, *daemon) {
 	t.Helper()
-	return testProxyWith(t, project, newDaemon(t, ""), slog.NewTextHandler(io.Discard, nil))
+	return testProxyWith(t, project, newDaemon(t, ""), slog.NewTextHandler(io.Discard, nil),
+		policy.DefaultCommands())
 }
 
 func testProxyWithLogger(t *testing.T, project *types.Project, handler slog.Handler) (string, *daemon) {
 	t.Helper()
-	return testProxyWith(t, project, newDaemon(t, ""), handler)
+	return testProxyWith(t, project, newDaemon(t, ""), handler, policy.DefaultCommands())
 }
 
-func testProxyWith(t *testing.T, project *types.Project, upstream *daemon, handler slog.Handler) (string, *daemon) {
+func testProxyWith(
+	t *testing.T,
+	project *types.Project,
+	upstream *daemon,
+	handler slog.Handler,
+	commands policy.Commands,
+) (string, *daemon) {
 	t.Helper()
 	authz, err := policy.New(policy.Config{
 		Project:         project,
 		DockerHost:      upstream.socket,
 		Listen:          upstream.socket,
 		Engine:          ownedContainers{},
-		AllowedCommands: policy.DefaultCommands(),
+		AllowedCommands: commands,
 	})
 	if err != nil {
 		t.Fatalf("build policy: %v", err)
@@ -309,6 +402,13 @@ type daemon struct {
 // it when apiVersion is empty.
 func newDaemon(t *testing.T, apiVersion string) *daemon {
 	t.Helper()
+	return newDaemonWith(t, apiVersion, nil)
+}
+
+// newDaemonWith answers the way newDaemon does, and then hands every request to the given
+// handler, which is what a daemon that streams does.
+func newDaemonWith(t *testing.T, apiVersion string, stream http.HandlerFunc) *daemon {
+	t.Helper()
 	d := &daemon{}
 	l := listenUnix(t, filepath.Join(shortTempDir(t), "upstream.sock"))
 	d.socket = l.Addr().String()
@@ -330,6 +430,10 @@ func newDaemon(t *testing.T, apiVersion string) *daemon {
 					`","MinAPIVersion":"1.24","FieldANewerEngineAdded":{"nested":true}}`))
 				return
 			}
+		}
+		if stream != nil {
+			stream(w, r)
+			return
 		}
 		_, _ = w.Write([]byte(`{"upstream":"answered"}`))
 	})}
@@ -361,6 +465,16 @@ func listenUnix(t *testing.T, path string) net.Listener {
 	}
 	t.Cleanup(func() { _ = l.Close() })
 	return l
+}
+
+func readAll(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return string(body)
 }
 
 func do(t *testing.T, socket, method, path, body string) *http.Response {

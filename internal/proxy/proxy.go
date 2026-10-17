@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -159,7 +160,35 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, body []byte, que
 	if err := http.NewResponseController(w).Flush(); err != nil {
 		p.logger.Debug("could not flush response headers", "error", err.Error())
 	}
-	_, _ = io.Copy(w, resp.Body)
+	forwardBody(w, resp.Body, endpoint)
+}
+
+// forwardBody relays the response body. An incremental body is handed over a chunk at a
+// time, so that a client following a stream sees what the daemon writes as it writes it.
+func forwardBody(w http.ResponseWriter, src io.Reader, endpoint string) {
+	if !isIncrementalEndpoint(endpoint) {
+		_, _ = io.Copy(w, src)
+		return
+	}
+	_, _ = io.Copy(&flushingWriter{w: w, controller: http.NewResponseController(w)}, src)
+}
+
+// flushingWriter flushes after each chunk it is given. A ResponseWriter that cannot
+// flush is written to as usual, since buffering is all such a writer can do.
+type flushingWriter struct {
+	w          io.Writer
+	controller *http.ResponseController
+}
+
+func (f *flushingWriter) Write(p []byte) (int, error) {
+	n, err := f.w.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if err := f.controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return n, err
+	}
+	return n, nil
 }
 
 const upstreamHost = "docker"

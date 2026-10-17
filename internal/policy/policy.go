@@ -154,6 +154,11 @@ func (p *Policy) decide(ctx context.Context, op operation, req *Request) (servic
 		return "", "", filters, err
 
 	case "/images/create":
+		// A pull is what `docker compose pull` performs, and what `run` needs before
+		// it can create anything, so either command authorizes it.
+		if err := p.commands.checkAny(commandPull, commandRun); err != nil {
+			return "", "", "", err
+		}
 		return "", "", "", authorizePull(p.project, query)
 
 	case "/images/{name}/json":
@@ -162,6 +167,15 @@ func (p *Policy) decide(ctx context.Context, op operation, req *Request) (servic
 				"image %q is not declared by compose project %q", op.Target, p.project.Name)
 		}
 		return "", "", "", nil
+
+	case "/events":
+		// The event watch a followed log stream opens, so it belongs to `logs` and
+		// observes the project's own containers only.
+		if err := p.commands.check(commandLogs); err != nil {
+			return "", "", "", err
+		}
+		filters, err := checkEventScope(p.project, query.Get("filters"))
+		return "", "", filters, err
 
 	case "/networks":
 		filters, err := p.checkListScope(kindNetwork, query.Get("filters"))
@@ -242,6 +256,11 @@ func (p *Policy) authorizeContainer(ctx context.Context, op operation, method st
 // A one-off container belongs to `run`; an ordinary one belongs to the command that
 // acts on it, and to no other.
 func (p *Policy) checkControl(op operation, labels map[string]string) error {
+	// Logs return what the container wrote, so `run` on a one-off container says
+	// nothing about them; only `logs` does, whichever kind of container it is.
+	if op.Endpoint == logsEndpoint {
+		return p.commands.check(commandLogs)
+	}
 	if isOneOff(labels) {
 		return p.commands.check(commandRun)
 	}

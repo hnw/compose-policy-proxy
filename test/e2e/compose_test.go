@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hnw/compose-policy-proxy/internal/policy"
 )
@@ -210,6 +211,144 @@ func TestStartAndStopAreRefusedWithoutTheirCommand(t *testing.T) {
 	if !h.isRunning(id) {
 		t.Fatal("a refused stop stopped the container anyway")
 	}
+}
+
+func TestRestartThroughTheProxy(t *testing.T) {
+	p := newStartStopProject(t)
+	h := startProxy(t, p, "--allow-command=run,start,stop,restart")
+
+	h.composeOnEngine("up", "-d", "app")
+	id := p.containerForService(t, "app")
+	before := h.startedAt(t, id)
+
+	h.mustCompose("restart", "app")
+
+	if !h.isRunning(id) {
+		t.Fatal("the container is not running after the restart")
+	}
+	if after := h.startedAt(t, id); after == before {
+		t.Errorf("the container was not restarted, it started at %s both times", after)
+	}
+	h.proxy.requireLogContains(t, "endpoint=/containers/{id}/restart")
+}
+
+// `restart` is not implied by having `start` and `stop`, since it is one operation
+// against a container rather than the two the client would otherwise have to send.
+func TestRestartIsRefusedWithoutItsCommand(t *testing.T) {
+	p := newStartStopProject(t)
+	h := startProxy(t, p, "--allow-command=run,start,stop")
+
+	h.composeOnEngine("up", "-d", "app")
+	id := p.containerForService(t, "app")
+	before := h.startedAt(t, id)
+
+	if out := h.mustDenyCompose("restart", "app"); !strings.Contains(out, "compose restart is not available") {
+		t.Errorf("expected the refusal to name the command, got:\n%s", out)
+	}
+	if after := h.startedAt(t, id); after != before {
+		t.Errorf("a refused restart started the container again: %s became %s", before, after)
+	}
+}
+
+func TestPullThroughTheProxy(t *testing.T) {
+	p := newBaseProject(t)
+	h := startProxy(t, p, "--allow-command=pull")
+
+	h.mustCompose("pull")
+
+	h.proxy.requireLogContains(t, "endpoint=/images/create")
+}
+
+// Pulling is what `docker compose pull` does, and `run` may still pull the declared
+// image it needs, so only a setting with neither command refuses it.
+func TestPullIsRefusedWithoutRunOrPull(t *testing.T) {
+	p := newBaseProject(t)
+	h := startProxy(t, p, "--allow-command=start,stop")
+
+	if out := h.mustDenyCompose("pull"); !strings.Contains(out, "compose pull is not available") {
+		t.Errorf("expected the refusal to name the command, got:\n%s", out)
+	}
+}
+
+// The service keeps writing, and repeats a marker once the test creates the file, so a
+// line carrying that marker can only have been written after the test asked for it.
+const logsCompose = `services:
+  app:
+    image: %IMAGE%
+    command: ["sh", "-c", "n=0; while true; do echo LOG-TICK-$$n; [ -f /mark/after ] && echo LOG-AFTER-FOLLOW; n=$$((n+1)); sleep 0.2; done"]
+    volumes:
+      - ./mark:/mark
+`
+
+func newLogsProject(t *testing.T) *project {
+	t.Helper()
+	p := newProject(t, render(logsCompose, testImage), map[string]string{"mark/.keep": ""})
+	t.Cleanup(func() { p.cleanup(t) })
+	return p
+}
+
+func TestLogsThroughTheProxy(t *testing.T) {
+	p := newLogsProject(t)
+	h := startProxy(t, p)
+
+	h.composeOnEngine("up", "-d", "app")
+
+	if out := h.mustCompose("logs", "app"); !strings.Contains(out, "LOG-TICK-") {
+		t.Errorf("expected the container's output, got:\n%s", out)
+	}
+	h.proxy.requireLogContains(t, "endpoint=/containers/{id}/logs")
+}
+
+func TestLogsFollowDeliversOutputWrittenLater(t *testing.T) {
+	p := newLogsProject(t)
+	h := startProxy(t, p)
+
+	h.composeOnEngine("up", "-d", "app")
+
+	received, ended, stop := h.followCompose("logs", "--follow", "app")
+	defer stop()
+
+	// The stream is established once the service's own output arrives, so the marker is
+	// only written after that, and cannot be part of what the stream replayed.
+	if !awaitText(t, received, "LOG-TICK-") {
+		t.Fatalf("log stream did not start:\n%s", received())
+	}
+	if err := writeFile(p.absolutePath("mark", "after"), ""); err != nil {
+		t.Fatalf("let the service write more: %v", err)
+	}
+	if !awaitText(t, received, "LOG-AFTER-FOLLOW") {
+		t.Fatalf("later log output was not received:\n%s", received())
+	}
+	if exited, err := ended(); exited {
+		t.Fatalf("docker compose logs --follow ended while the container was still writing: %v", err)
+	}
+	// Following also watches the project's containers for ones created meanwhile, which
+	// the proxy authorizes only for that project.
+	h.proxy.requireLogContains(t, "allowed=true method=GET endpoint=/events")
+}
+
+func TestLogsIsRefusedWithoutItsCommand(t *testing.T) {
+	p := newLogsProject(t)
+	h := startProxy(t, p, "--allow-command=run,start,stop")
+
+	h.composeOnEngine("up", "-d", "app")
+
+	if out := h.mustDenyCompose("logs", "app"); !strings.Contains(out, "compose logs is not available") {
+		t.Errorf("expected the refusal to name the command, got:\n%s", out)
+	}
+}
+
+// awaitText waits for output a followed stream must deliver while it is still open.
+func awaitText(t *testing.T, received func() string, want string) bool {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(received(), want) {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 func TestCannotListOutsideProject(t *testing.T) {
@@ -464,7 +603,6 @@ func TestDeniesEndpointsOutsideAllowlist(t *testing.T) {
 		{"POST", "/containers/" + id + "/exec"},
 		{"POST", "/v1.51/build"},
 		{"POST", "/v1.51/images/prune"},
-		{"GET", "/v1.51/events"},
 		{"POST", "/v1.51/networks/" + p.name + "_frontend/disconnect"},
 		{"DELETE", "/v1.51/volumes/" + p.name + "_cache"},
 		{"POST", "/v1.51/services/create"},

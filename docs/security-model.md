@@ -70,13 +70,17 @@ These restrictions reduce unnecessary information disclosure but are not relied 
 
 ## Container creation and control
 
-Container creation is limited to one-off containers, as used by `docker compose run`. Existing service containers may be started and stopped, but cannot be created or otherwise controlled through the restricted socket. Read-only operations remain available when the container passes the ownership and configuration checks.
+Container creation is limited to one-off containers, as used by `docker compose run`. Existing service containers may be started, stopped, and restarted, but cannot be created or otherwise controlled through the restricted socket. Read-only operations remain available when the container passes the ownership and configuration checks.
 
 One-off containers are identified by `com.docker.compose.oneoff=True`. This label is client-controlled and does not prove that Docker Compose made the request. The container must still match a declared Compose service. The label does not limit how long a container may run.
 
 The `--allow-command` setting controls which supported operations are available to clients of the socket. It applies to all clients equally and does not authenticate them. It cannot bypass the Compose configuration or the protected-service restrictions.
 
 See [policy.md](policy.md) for the supported commands, their Docker API operations, and the authorization rules.
+
+## Reading container output
+
+Container logs may contain sensitive application data, so reading them requires `logs` permission. Logs from protected services are denied. The event stream used by `logs --follow` is restricted to project container events, including those of protected services.
 
 ## Existing-container ownership
 

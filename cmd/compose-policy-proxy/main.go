@@ -42,7 +42,7 @@ func run() error {
 		dockerHost   = flag.String("docker-host", defaultDockerHost, "path of the Docker daemon socket to forward to")
 		socketMode   = flag.String("socket-mode", "0660", "file mode of the listening socket, in octal")
 		allowCommand = flag.String("allow-command", policy.DefaultCommandList,
-			"comma-separated Compose commands to allow: "+policy.DefaultCommandList)
+			"comma-separated Compose commands to allow")
 		logFormat   = flag.String("log-format", string(proxy.LogFormatText), "log format: text or json")
 		logLevel    = flag.String("log-level", "info", "log level: debug, info, warn or error")
 		showVersion = flag.Bool("version", false, "print the version and exit")
